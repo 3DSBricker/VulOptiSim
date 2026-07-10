@@ -82,6 +82,16 @@ void Hero::push(glm::vec2 direction, float magnitude)
     force += direction * magnitude;
 }
 
+void Hero::apply_force(glm::vec2 force_delta)
+{
+    if (!active)
+    {
+        return;
+    }
+
+    force += force_delta;
+}
+
 void Hero::take_damage(int damage)
 {
     if (!active)

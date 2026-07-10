@@ -12,6 +12,7 @@ public:
     void set_route(const std::vector<glm::vec2>& new_route);
 
     void push(glm::vec2 direction, float magnitude);
+    void apply_force(glm::vec2 force_delta);
 
     void take_damage(int damage);
     void drain_mana(int cost);
