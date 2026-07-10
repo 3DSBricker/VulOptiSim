@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "magic_staff.h"
 
-Magic_Staff::Magic_Staff(const glm::vec3& position, const Terrain* terrain) : name(name), transform(position), terrain(terrain)
+Magic_Staff::Magic_Staff(const glm::vec3& position, const Terrain* terrain) : name("staff"), transform(position), terrain(terrain)
 {
     transform.scale = glm::vec3(0.5f);
 }

@@ -21,6 +21,7 @@ Log* Log::get_instance()
 
 void Log::clear()
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     text_buffer.clear();
     line_offsets.clear();
     line_offsets.push_back(0);
@@ -28,6 +29,7 @@ void Log::clear()
 
 void Log::add_log(const char* fmt, ...) IM_FMTARGS(2)
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
     int old_size = text_buffer.size();
     va_list args;
     va_start(args, fmt);
@@ -44,6 +46,8 @@ void Log::add_log(const char* fmt, ...) IM_FMTARGS(2)
 
 void Log::draw(const char* title, bool* p_open)
 {
+    std::lock_guard<std::recursive_mutex> lock(log_mutex);
+
     if (!ImGui::Begin(title, p_open))
     {
         ImGui::End();

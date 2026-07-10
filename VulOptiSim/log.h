@@ -21,6 +21,7 @@ public:
 
 private:
 
+    std::recursive_mutex log_mutex;
     ImGuiTextBuffer     text_buffer;
     ImGuiTextFilter     text_filter;
     ImVector<int>       line_offsets; // Index to lines offset. We maintain this with add_log() calls.

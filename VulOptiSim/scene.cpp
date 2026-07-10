@@ -206,48 +206,30 @@ void Scene::check_collisions()
         }
     }
 
-    // Multithreading gedeelte
-    const size_t num_threads = std::thread::hardware_concurrency(); // Aantal beschikbare cores
-    const size_t batch_size = (heroes.size() + num_threads - 1) / num_threads; // Ronde omhoog
-    std::vector<std::future<void>> futures;
+    // Controleer botsingen binnen dezelfde grid-cellen
+    for (size_t i = 0; i < heroes.size(); i++) {
 
-    for (size_t batch_start = 0; batch_start < heroes.size(); batch_start += batch_size) {
-        size_t batch_end = std::min(batch_start + batch_size, heroes.size());
+        auto& hero_i = heroes[i];  // maak referentie naar heroes[i]
 
-        // start thread voor elke batch
-        futures.push_back(pool.enqueue([this, batch_start, batch_end] {
+        if (!hero_i.is_active()) continue;
 
-            // Controleer botsingen binnen dezelfde grid-cellen
-            for (size_t i = batch_start; i < batch_end; i++) {
+        // Haal nabije helden op binnen dezelfde grid-cel
+        const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
 
-                auto& hero_i = heroes[i];  // maak referentie naar heroes[i]
+        for (int j : nearby) {
+            auto& hero_j = heroes[j];  // maak referentie naar heroes[j]
 
-                if (!hero_i.is_active()) continue;
+            if (i == j || !hero_j.is_active()) continue; // Voorkom zelfbotsing en botsing met inactieve helden
 
-                // Haal nabije helden op binnen dezelfde grid-cel
-                const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
-
-                for (int j : nearby) {
-                    auto& hero_j = heroes[j];  // maak referentie naar heroes[j]
-
-                    if (i == j || !hero_j.is_active()) continue; // Voorkom zelfbotsing en botsing met inactieve helden
-
-                    // Controleer of de twee helden botsen
-                    if (circle_collision(hero_i.get_position2d(), hero_i.get_collision_radius(),
-                        hero_j.get_position2d(), hero_j.get_collision_radius()))
-                    {
-                        // Bereken duwrichting en kracht op basis van de overlap
-                        glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
-                        hero_j.push(glm::normalize(direction), (hero_i.get_collision_radius()) - (glm::length(direction) / 2));
-                    }
-                }
+            // Controleer of de twee helden botsen
+            if (circle_collision(hero_i.get_position2d(), hero_i.get_collision_radius(),
+                hero_j.get_position2d(), hero_j.get_collision_radius()))
+            {
+                // Bereken duwrichting en kracht op basis van de overlap
+                glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
+                hero_j.push(glm::normalize(direction), (hero_i.get_collision_radius()) - (glm::length(direction) / 2));
             }
-        }));
-    }
-
-    // wacht tot alle taken klaar zijn
-    for (auto& f : futures) {
-        f.get();
+        }
     }
 
 }
@@ -282,7 +264,8 @@ void Scene::update(const float delta_time)
 
     std::vector<std::future<void>> futures;
 
-    const size_t hero_batch = heroes.size() / 4 * std::thread::hardware_concurrency(); // meer threads blijkt sneller
+    const size_t worker_count = std::max(1u, std::thread::hardware_concurrency());
+    const size_t hero_batch = std::max<size_t>(1, heroes.size() / 4 * worker_count); // meer threads blijkt sneller
     for (size_t i = 0; i < heroes.size(); i += hero_batch) {
         // Bereken het einde van de huidige batch
         size_t end = std::min(i + hero_batch, heroes.size());
@@ -295,30 +278,19 @@ void Scene::update(const float delta_time)
             }));
     }
 
-    futures.push_back(pool.enqueue([this, delta_time] {
-        for (auto& staff : staves)
-        {
-            staff.update(delta_time, heroes, active_lightning, projectiles);
-        }
-    }));
-
-    futures.push_back(pool.enqueue([this, delta_time] {
-        for (auto& lightning : active_lightning)
-        {
-            lightning.update(delta_time, camera, heroes);
-        }
-    }));
-
-    futures.push_back(pool.enqueue([this, delta_time] {
-        for (auto& projectile : projectiles)
-        {
-            projectile.update(delta_time, camera, shield, heroes);
-        }
-    }));
-
     // wacht
     for (auto& f : futures) {
         f.get();
+    }
+
+    for (auto& staff : staves)
+    {
+        staff.update(delta_time, heroes, active_lightning, projectiles);
+    }
+
+    for (auto& lightning : active_lightning)
+    {
+        lightning.update(delta_time, camera, heroes);
     }
 
     //Remove inactive lightning
@@ -353,8 +325,9 @@ void Scene::draw()
     std::vector<glm::mat4> staff_transforms;
 
     // Aantal helden per batch
-    const size_t batch_size = heroes.size() / 4 * std::thread::hardware_concurrency(); // meer threads blijkt sneller
-    const size_t batch_size_2 = 10 * staves.size() / std::thread::hardware_concurrency(); // 10 vanwege lage aantal staves
+    const size_t worker_count = std::max(1u, std::thread::hardware_concurrency());
+    const size_t batch_size = std::max<size_t>(1, heroes.size() / 4 * worker_count); // meer threads blijkt sneller
+    const size_t batch_size_2 = std::max<size_t>(1, 10 * staves.size() / worker_count); // 10 vanwege lage aantal staves
 
     // Parallel processing van heroes in batches
     for (size_t i = 0; i < heroes.size(); i += batch_size)
