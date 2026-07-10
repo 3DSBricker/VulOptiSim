@@ -35,6 +35,7 @@ public:
     int get_mana() const { return mana; };
 
     bool is_active() const { return active; };
+    std::string get_name() const { return name; };
 
     glm::mat4 get_transform_matrix() const {
         return transform.get_matrix(); // Return de matrix vanuit de transform
@@ -44,6 +45,8 @@ public:
 private:
 
     void face_target(const glm::vec2& target);
+
+    std::string name;
 
     bool active = true;
     int health = 1000;

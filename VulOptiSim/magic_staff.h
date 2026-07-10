@@ -23,6 +23,8 @@ private:
 
     Hero* find_closest_target(std::vector<Hero>& heroes) const;
 
+    std::string name;
+
     float animation_time = 0.f;
 
     const float lightning_cooldown = 7.5f;

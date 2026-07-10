@@ -85,9 +85,15 @@ void Scene::load_effects() const
 
 void Scene::spawn_heroes()
 {
+    //Transform hero_transform;
+    //hero_transform.rotation = glm::quatLookAt(glm::vec3(0.f, 0.f, 1.f), glm::vec3(0.f, 1.f, 0.f));
+    //hero_transform.scale = glm::vec3(1.f);
+
+
     int start_areas = 10;
     float start_area_tile_offset = 12.f;
     float spawn_start_y = terrain.tile_width * 3.f;
+
     float start_corner_y = 9.f * terrain.tile_width;
     float spawn_offset = terrain.tile_width / 3.f;
     float route_cache_resolution = terrain.tile_width * 2.f; // Grid-grootte voor routecache
@@ -110,16 +116,16 @@ void Scene::spawn_heroes()
             float start_area_offset = s * start_area_tile_offset * terrain.tile_width;
             float base_x = start_corner_y + start_area_offset;
 
-            for (int i = 0; i < 30; i++)
+        for (int i = 0; i < 30; i++)
+        {
+            float x = base_x + (i * spawn_offset);
+            for (int j = 0; j < 30; j++)
             {
-                float x = base_x + (i * spawn_offset);
-                for (int j = 0; j < 30; j++)
-                {
-                    float z = spawn_start_y + (j * spawn_offset);
-                    float y = terrain.get_height(glm::vec2(x, z));
-                    glm::vec2 start_pos = glm::vec2(x, z);
-                    glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution); // afgeronde grid positie
-
+                float z = spawn_start_y + (j * spawn_offset);
+                float y = terrain.get_height(glm::vec2(x, z));
+                glm::vec2 start_pos = glm::vec2(x, z);
+                glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution); // afgeronde grid positie
+                
                     // check of route al bestaat
                     std::vector<glm::vec2> route;
                     {
@@ -149,8 +155,9 @@ void Scene::spawn_heroes()
     for (auto& f : futures) {
         f.get();
     }
-}
 
+   // Log::get_instance()->add_log("Spawned %d characters.\n", spawn_count);
+}
 void Scene::spawn_staves()
 {
     glm::vec2 spawn_start{ terrain.tile_width * 15.f,  terrain.tile_length * 48.f };
@@ -159,14 +166,18 @@ void Scene::spawn_staves()
     float spawn_offset_x = 12.f * terrain.tile_height;
     float spawn_offset_y = 40.f * terrain.tile_length;
 
+    float spawn_count = 0;
     for (int i = 0; i < 10; i++)
     {
         for (int j = 0; j < 2; j++)
         {
+            spawn_count++;
             glm::vec3 position{ spawn_start.x + i * spawn_offset_x, height, spawn_start.y + j * spawn_offset_y };
             staves.emplace_back(position, &terrain);
         }
     }
+
+    Log::get_instance()->add_log("Spawned %d staves.\n", spawn_count);
 }
 
 size_t Scene::get_character_count() const
@@ -406,6 +417,8 @@ void Scene::draw()
 
     show_health_values();
     show_mana_values();
+
+    Log::get_instance()->draw("Log");
 
     show_controls();
 }

@@ -91,12 +91,16 @@ void Hero::take_damage(int damage)
 
     health -= damage;
 
+    Log::get_instance()->add_log("%s takes %d damage.\n", name, damage);
+
     if (health <= 0)
     {
         health = 0;
 
         active = false;
         //TODO: RIP animation
+
+        Log::get_instance()->add_log("%s is down for the count!\n", name);
     }
 }
 
@@ -104,9 +108,13 @@ void Hero::drain_mana(int cost)
 {
     mana -= cost;
 
+    Log::get_instance()->add_log("%s loses %d mana.\n", name, cost);
+
     if (mana < 0)
     {
         mana = 0;
+
+        Log::get_instance()->add_log("%s is oom, weakening the shield!\n", name);
     }
 }
 
