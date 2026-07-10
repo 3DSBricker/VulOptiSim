@@ -12,7 +12,7 @@ void measure_performance(const vulvox::Renderer& renderer, const Scene& scene, f
 
     static float duration = 0;
 
-    float REF_PERFORMANCE = 51069.324f;
+    float REF_PERFORMANCE = 5976299.2f; // bij 60 frames, keer 100
 
     if (frame_count >= max_frames)
     {
@@ -42,7 +42,6 @@ void measure_performance(const vulvox::Renderer& renderer, const Scene& scene, f
 
         frame_count--;
     }
-
     ImGui::Begin("Performance");
     ImGui::Text("Frame: %i", frame_count);
     ImGui::Text("Frame delta: %f", delta_time);
@@ -119,6 +118,7 @@ int main()
 
     //try
     {
+        auto total_start = std::chrono::high_resolution_clock::now();
         vulvox::Renderer renderer;
 
         auto start_time = std::chrono::high_resolution_clock::now();
@@ -128,8 +128,19 @@ int main()
 
         renderer.set_dark_theme();
         //renderer.set_light_theme(); //Bleh
+        auto renderer_end = std::chrono::high_resolution_clock::now();
 
+        //Scene scene(renderer);
+        auto scene_start = std::chrono::high_resolution_clock::now();
         Scene scene(renderer);
+        auto scene_end = std::chrono::high_resolution_clock::now();
+
+        float scene_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(scene_end - scene_start).count();
+        float renderer_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(renderer_end - total_start).count();
+        float total_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(scene_end - total_start).count();
+        std::cout << "Renderer loading took: " << renderer_duration << " ms" << std::endl;
+        std::cout << "Scene loading took: " << scene_duration << " ms" << std::endl;
+        std::cout << "Total loading took: " << total_duration << " ms" << std::endl;
 
         //Track last 60 frame timings
         std::array<float, 60> frames;

@@ -10,13 +10,17 @@ class Scene
 public:
     explicit Scene(vulvox::Renderer& renderer);
 
+    void check_collisions();
+
     void update(const float delta_time);
     void draw();
 
-    std::vector<int> sort(const std::vector<int>& to_sort) const;
-    std::vector<glm::vec2> convex_hull(const std::vector<glm::vec2>& points) const;
+    void sort(std::vector<int>& arr) const;
+    void quicksort(std::vector<int>& arr, int low, int high) const;
+    //std::vector<glm::vec2> convex_hull(const std::vector<glm::vec2>& points) const;
 
     void load_models_and_textures() const;
+    void load_effects() const;
     void spawn_heroes();
     void spawn_staves();
 
@@ -33,6 +37,10 @@ private:
 
     void show_health_values() const;
     void show_mana_values() const;
+
+    ThreadPool pool; // initialiseer threadpool
+
+    std::mutex hero_mutex; // anti race
 
     glm::dvec2 prev_mouse_pos;
 
@@ -53,4 +61,31 @@ private:
     Terrain terrain;
 
     Shield shield;
+
+    struct Grid {
+        std::unordered_map<int, std::vector<int>> cells;
+        float cell_size;
+
+        Grid(float size) : cell_size(size) {}
+
+        int get_cell_id(const glm::vec2& pos) {
+            int x = static_cast<int>(pos.x / cell_size);
+            int y = static_cast<int>(pos.y / cell_size);
+            return (x << 16) | y; // Unieke sleutel voor de cel
+        }
+
+        void add_hero(int hero_index, const glm::vec2& position) {
+            cells[get_cell_id(position)].push_back(hero_index);
+        }
+
+        const std::vector<int>& get_nearby_heroes(const glm::vec2& position) {
+            return cells[get_cell_id(position)];
+        }
+
+        void clear() { cells.clear(); }
+    };
+
+    Grid hero_grid;
+
+
 };

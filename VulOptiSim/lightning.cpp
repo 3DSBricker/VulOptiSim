@@ -13,7 +13,7 @@ Lightning::Lightning(glm::vec3 position) : animation_timer("lightning", 0, 10, 0
     collision_box_max = transform.get_position2d() + glm::vec2(plane_size.x / 2, plane_size.y / 2);
 }
 
-void Lightning::update(const float delta_time, const Camera& camera, std::vector<Hero>& heroes)
+void Lightning::update(const float delta_time, const Camera& camera, std::vector<Hero> &heroes)
 {
     if (active)
     {
@@ -49,7 +49,6 @@ void Lightning::check_hits(std::vector<Hero>& heroes) const
         {
             if (hero.is_active() && hero.collision(collision_box_min, collision_box_max))
             {
-                Log::get_instance()->add_log("%s is hit by lightning!\n", hero.get_name());
                 hero.take_damage(damage_per_frame);
             }
         }

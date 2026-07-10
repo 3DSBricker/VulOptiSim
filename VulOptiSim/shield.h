@@ -4,7 +4,9 @@ class Shield
 {
 public:
     Shield() = default;
-    Shield(const std::string& texture_array_name, const std::vector<Hero>& heroes);
+    Shield(const std::string& texture_array_name);
+
+    void update(const std::vector<Hero>& heroes);
 
     void draw(vulvox::Renderer* renderer) const;
 

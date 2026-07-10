@@ -1,8 +1,11 @@
 #include "pch.h"
 #include "scene.h"
 
-Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer)
+Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer),
+pool(std::thread::hardware_concurrency()), // Threadpool met max cores
+hero_grid(10.0f) // Grid om botsingsdetectie te optimaliseren (cell-size = 10 eenheden)
 {
+    std::vector<std::future<void>> future;
     glfwGetCursorPos(this->renderer->get_window(), &prev_mouse_pos.x, &prev_mouse_pos.y);
 
     glm::vec3 camera_pos{ -28.2815380f, 305.485260f, -30.0800228f };
@@ -13,11 +16,30 @@ Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer)
 
     terrain = Terrain(TERRAIN_PATH);
 
+    shield = Shield{ "shield" };
+
     load_models_and_textures();
 
-    spawn_heroes();
+    future.push_back(pool.enqueue([this] {
+        load_effects();
+        }));
 
-    spawn_staves();
+    future.push_back(pool.enqueue([this] {
+        auto spawn_start = std::chrono::high_resolution_clock::now();
+        spawn_heroes();
+        auto spawn_end = std::chrono::high_resolution_clock::now();
+        float spawn_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(spawn_end - spawn_start).count();
+        std::cout << "Spawn loading took: " << spawn_duration << " ms" << std::endl;
+    }));
+
+    future.push_back(pool.enqueue([this] {
+        spawn_staves();
+        }));
+
+    // wacht tot alle taken klaar zijn
+    for (auto& f : future) { // scheelt 3 seconden
+        f.get();
+    }
 
     std::cout << "Scene loaded." << std::endl;
 }
@@ -25,14 +47,6 @@ Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer)
 void Scene::load_models_and_textures() const
 {
     //Load all the models and textures we're going to need into GPU memory
-
-    //Terrain textures
-    std::vector<std::filesystem::path> texture_paths{
-        CUBE_SEA_TEXTURE_PATH,  //Sea
-        CUBE_GRASS_FLOWER_TEXTURE_PATH, //Lab floor
-        CUBE_CONCRETE_WALL_TEXTURE_PATH, //Lab walls
-        CUBE_MOSS_TEXTURE_PATH }; //Floor
-    renderer->load_texture_array("texture_array_test", texture_paths);
 
     //NPCs
     //renderer->load_model("konata", MODEL_PATH);
@@ -45,7 +59,20 @@ void Scene::load_models_and_textures() const
     renderer->load_texture("staff", STAFF_TEXTURE_PATH);
 
     renderer->load_model("cube", CUBE_MODEL_PATH);
-    renderer->load_texture("cube", CUBE_SEA_TEXTURE_PATH);
+    //renderer->load_texture("cube", CUBE_SEA_TEXTURE_PATH); // onnodig want al in texutre_paths
+}
+
+void Scene::load_effects() const
+{
+    //Load all the models and textures we're going to need into GPU memory
+
+    //Terrain textures
+    std::vector<std::filesystem::path> texture_paths{
+        CUBE_SEA_TEXTURE_PATH,  //Sea
+        CUBE_GRASS_FLOWER_TEXTURE_PATH, //Lab floor
+        CUBE_CONCRETE_WALL_TEXTURE_PATH, //Lab walls
+        CUBE_MOSS_TEXTURE_PATH }; //Floor
+    renderer->load_texture_array("texture_array_test", texture_paths);
 
     //Effects
     std::vector<std::filesystem::path> shield_path{ SHIELD_TEXTURE_PATH };
@@ -58,47 +85,72 @@ void Scene::load_models_and_textures() const
 
 void Scene::spawn_heroes()
 {
-    Transform hero_transform;
-    hero_transform.rotation = glm::quatLookAt(glm::vec3(0.f, 0.f, 1.f), glm::vec3(0.f, 1.f, 0.f));
-    hero_transform.scale = glm::vec3(1.f);
-
-    float spawn_offset = terrain.tile_width / 3.f;
-
     int start_areas = 10;
     float start_area_tile_offset = 12.f;
     float spawn_start_y = terrain.tile_width * 3.f;
-
     float start_corner_y = 9.f * terrain.tile_width;
+    float spawn_offset = terrain.tile_width / 3.f;
+    float route_cache_resolution = terrain.tile_width * 2.f; // Grid-grootte voor routecache
 
     std::cout << "Spawning characters and calculating routes..." << std::endl;
 
-    int spawn_count = 0;
+    std::vector<std::future<void>> futures;
+    glm::uvec2 target = { 69 * terrain.tile_width, 160 * terrain.tile_width };
+
+    // grid based route cache (deelt routes per gridcel om niet per hero te berekenen)
+    std::unordered_map<glm::ivec2, std::vector<glm::vec2>, IVec2Hash> route_cache;
+    std::mutex route_mutex;
+
     for (int s = 0; s < start_areas; s++)
     {
-        float start_area_offset = static_cast<float>(s) * start_area_tile_offset * terrain.tile_width;
+        futures.push_back(pool.enqueue([this, s, spawn_offset, start_corner_y, spawn_start_y, start_area_tile_offset, target, route_cache_resolution, &route_cache, &route_mutex] {
+            std::vector<Hero> local_heroes;
+            local_heroes.reserve(900); // Voorkom reallocaties
 
-        for (int i = 0; i < 30; i++)
-        {
-            for (int j = 0; j < 30; j++)
+            float start_area_offset = s * start_area_tile_offset * terrain.tile_width;
+            float base_x = start_corner_y + start_area_offset;
+
+            for (int i = 0; i < 30; i++)
             {
-                float x = start_corner_y + start_area_offset + ((float)i * spawn_offset);
-                float z = spawn_start_y + ((float)j * spawn_offset);
-                float y = terrain.get_height(glm::vec2(x, z));
+                float x = base_x + (i * spawn_offset);
+                for (int j = 0; j < 30; j++)
+                {
+                    float z = spawn_start_y + (j * spawn_offset);
+                    float y = terrain.get_height(glm::vec2(x, z));
+                    glm::vec2 start_pos = glm::vec2(x, z);
+                    glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution); // afgeronde grid positie
 
-                hero_transform.position = glm::vec3(x, y, z);
+                    // check of route al bestaat
+                    std::vector<glm::vec2> route;
+                    {
+                        std::lock_guard<std::mutex> lock(route_mutex);
+                        if (route_cache.find(grid_pos) != route_cache.end()) {
+                            route = route_cache[grid_pos]; // gebruik bestaande route
+                        }
+                        else {
+                            route = terrain.find_route(start_pos, target); // bereken nieuwe route
+                            route_cache[grid_pos] = route;
+                        }
+                    }
 
-                spawn_count++;
-
-                heroes.emplace_back("frieren-blob", "frieren-blob", hero_transform, "Frieren" + std::to_string(spawn_count), 20.f);
-
-                auto r = terrain.find_route(glm::uvec2(x, z), glm::uvec2(69 * terrain.tile_width, 160 * terrain.tile_width));
-                heroes.back().set_route(r);
+                    // maak hero en set route
+                    local_heroes.emplace_back("frieren-blob", "frieren-blob", Transform(glm::vec3(x, y, z)), 20.f);
+                    local_heroes.back().set_route(route);
+                }
             }
-        }
+
+            // voeg lokale lijst toe aan globale lijst, met mutex (vanwege thread safety)
+            std::lock_guard<std::mutex> lock(hero_mutex);
+            heroes.insert(heroes.end(), local_heroes.begin(), local_heroes.end());
+            }));
     }
 
-    Log::get_instance()->add_log("Spawned %d characters.\n", spawn_count);
+    // wacht tot alle taken klaar zijn
+    for (auto& f : futures) {
+        f.get();
+    }
 }
+
 void Scene::spawn_staves()
 {
     glm::vec2 spawn_start{ terrain.tile_width * 15.f,  terrain.tile_length * 48.f };
@@ -107,18 +159,14 @@ void Scene::spawn_staves()
     float spawn_offset_x = 12.f * terrain.tile_height;
     float spawn_offset_y = 40.f * terrain.tile_length;
 
-    int spawn_count = 0;
     for (int i = 0; i < 10; i++)
     {
         for (int j = 0; j < 2; j++)
         {
-            spawn_count++;
             glm::vec3 position{ spawn_start.x + i * spawn_offset_x, height, spawn_start.y + j * spawn_offset_y };
-            staves.emplace_back("Staff" + std::to_string(spawn_count), position, &terrain);
+            staves.emplace_back(position, &terrain);
         }
     }
-
-    Log::get_instance()->add_log("Spawned %d staves.\n", spawn_count);
 }
 
 size_t Scene::get_character_count() const
@@ -129,6 +177,67 @@ size_t Scene::get_character_count() const
 size_t Scene::get_staff_count() const
 {
     return staves.size();
+
+}
+
+/**
+ * Controleert botsingen tussen actieve helden en duwt ze uit elkaar indien nodig.
+ */
+void Scene::check_collisions()
+{
+    // Clear grid, deze manier vanwege reallocaties
+    hero_grid.clear();
+
+    // helden toevoegen
+    for (size_t i = 0; i < heroes.size(); i++) {
+        if (heroes[i].is_active()) {
+            hero_grid.add_hero(i, heroes[i].get_position2d());
+        }
+    }
+
+    // Multithreading gedeelte
+    const size_t num_threads = std::thread::hardware_concurrency(); // Aantal beschikbare cores
+    const size_t batch_size = (heroes.size() + num_threads - 1) / num_threads; // Ronde omhoog
+    std::vector<std::future<void>> futures;
+
+    for (size_t batch_start = 0; batch_start < heroes.size(); batch_start += batch_size) {
+        size_t batch_end = std::min(batch_start + batch_size, heroes.size());
+
+        // start thread voor elke batch
+        futures.push_back(pool.enqueue([this, batch_start, batch_end] {
+
+            // Controleer botsingen binnen dezelfde grid-cellen
+            for (size_t i = batch_start; i < batch_end; i++) {
+
+                auto& hero_i = heroes[i];  // maak referentie naar heroes[i]
+
+                if (!hero_i.is_active()) continue;
+
+                // Haal nabije helden op binnen dezelfde grid-cel
+                const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
+
+                for (int j : nearby) {
+                    auto& hero_j = heroes[j];  // maak referentie naar heroes[j]
+
+                    if (i == j || !hero_j.is_active()) continue; // Voorkom zelfbotsing en botsing met inactieve helden
+
+                    // Controleer of de twee helden botsen
+                    if (circle_collision(hero_i.get_position2d(), hero_i.get_collision_radius(),
+                        hero_j.get_position2d(), hero_j.get_collision_radius()))
+                    {
+                        // Bereken duwrichting en kracht op basis van de overlap
+                        glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
+                        hero_j.push(glm::normalize(direction), (hero_i.get_collision_radius()) - (glm::length(direction) / 2));
+                    }
+                }
+            }
+        }));
+    }
+
+    // wacht tot alle taken klaar zijn
+    for (auto& f : futures) {
+        f.get();
+    }
 
 }
 
@@ -155,45 +264,50 @@ void Scene::update(const float delta_time)
     renderer->set_view_matrix(camera.get_view_matrix());
 
     //Make heroes collide with each other
-    for (size_t i = 0; i < heroes.size(); i++)
-    {
-        if (!heroes[i].is_active())
-        {
-            continue;
-        }
+    check_collisions();
 
-        for (size_t j = 0; j < heroes.size(); j++)
-        {
-            if (i == j || !heroes[j].is_active())
-            {
-                continue;
+    //shield = Shield{ "shield", heroes };
+    shield.update(heroes);
+
+    std::vector<std::future<void>> futures;
+
+    const size_t hero_batch = heroes.size() / 4 * std::thread::hardware_concurrency(); // meer threads blijkt sneller
+    for (size_t i = 0; i < heroes.size(); i += hero_batch) {
+        // Bereken het einde van de huidige batch
+        size_t end = std::min(i + hero_batch, heroes.size());
+
+        // Maak een thread voor elke batch
+        futures.push_back(pool.enqueue([this, delta_time, end, i] {
+            for (size_t j = i; j < end; ++j) {
+                heroes[j].update(delta_time, terrain);
             }
+            }));
+    }
 
-            //If the collision radii of the two heroes overlap, push them away
-            if (circle_collision(heroes[i].get_position2d(), heroes[i].get_collision_radius(), heroes[j].get_position2d(), heroes[j].get_collision_radius()))
-            {
-                glm::vec2 direction = heroes[j].get_position2d() - heroes[i].get_position2d();
-
-                heroes[j].push(glm::normalize(direction), (heroes[i].get_collision_radius()) - (glm::length(direction) / 2));
-            }
+    futures.push_back(pool.enqueue([this, delta_time] {
+        for (auto& staff : staves)
+        {
+            staff.update(delta_time, heroes, active_lightning, projectiles);
         }
-    }
+    }));
 
-    for (auto& hero : heroes)
-    {
-        hero.update(delta_time, terrain);
-    }
+    futures.push_back(pool.enqueue([this, delta_time] {
+        for (auto& lightning : active_lightning)
+        {
+            lightning.update(delta_time, camera, heroes);
+        }
+    }));
 
-    shield = Shield{ "shield", heroes };
+    futures.push_back(pool.enqueue([this, delta_time] {
+        for (auto& projectile : projectiles)
+        {
+            projectile.update(delta_time, camera, shield, heroes);
+        }
+    }));
 
-    for (auto& staff : staves)
-    {
-        staff.update(delta_time, heroes, active_lightning, projectiles);
-    }
-
-    for (auto& lightning : active_lightning)
-    {
-        lightning.update(delta_time, camera, heroes);
+    // wacht
+    for (auto& f : futures) {
+        f.get();
     }
 
     //Remove inactive lightning
@@ -218,17 +332,59 @@ void Scene::draw()
     //  Make sure the data needed for drawing (position etc.) is ready before calling the corresponding draw functions or weird things happen.
     //  Calling draw functions outside of this functions lifetime will crash the program!
 
-    for (const auto& hero : heroes)
+
+    std::vector<std::future<void>> futures;
+
+    std::mutex heroes_mutex;
+    std::mutex staff_mutex;
+
+    std::vector<glm::mat4> hero_transforms;
+    std::vector<glm::mat4> staff_transforms;
+
+    // Aantal helden per batch
+    const size_t batch_size = heroes.size() / 4 * std::thread::hardware_concurrency(); // meer threads blijkt sneller
+    const size_t batch_size_2 = 10 * staves.size() / std::thread::hardware_concurrency(); // 10 vanwege lage aantal staves
+
+    // Parallel processing van heroes in batches
+    for (size_t i = 0; i < heroes.size(); i += batch_size)
     {
-        hero.draw(renderer);
+        futures.push_back(pool.enqueue([this, batch_size, i, &heroes_mutex, &hero_transforms] {
+            std::lock_guard<std::mutex> lock(heroes_mutex);
+            size_t end_index = std::min(i + batch_size, heroes.size());
+            for (size_t j = i; j < end_index; ++j) {
+                hero_transforms.push_back(heroes[j].get_transform_matrix());  // voorbereiding transformaties
+            }
+            }));
+    }
+
+    // Parallel processing van staff in batches
+    for (size_t i = 0; i < staves.size(); i += batch_size_2)
+    {
+        futures.push_back(pool.enqueue([this, batch_size_2, i, &staff_mutex, &staff_transforms] {
+            std::lock_guard<std::mutex> lock(staff_mutex);
+            size_t end_index = std::min(i + batch_size_2, staves.size());
+            for (size_t j = i; j < end_index; ++j) {
+                staff_transforms.push_back(staves[j].get_transform_matrix());  // voorbereiding transformaties
+            }
+            }));
+    }
+
+    // Wacht tot alle threads klaar zijn
+    for (auto& f : futures) {
+        f.get();
+    }
+
+
+    // Verzend de transformaties in batches
+    if (!hero_transforms.empty()) {
+        renderer->draw_instanced("frieren-blob", "frieren-blob", hero_transforms);
+    }
+
+    if (!staff_transforms.empty()) {
+        renderer->draw_instanced("staff", "staff", staff_transforms);
     }
 
     terrain.draw(renderer);
-
-    for (const auto& staff : staves)
-    {
-        staff.draw(renderer);
-    }
 
     for (const auto& lightning : active_lightning)
     {
@@ -251,8 +407,6 @@ void Scene::draw()
     show_health_values();
     show_mana_values();
 
-    Log::get_instance()->draw("Log");
-
     show_controls();
 }
 
@@ -262,12 +416,14 @@ void Scene::draw()
 void Scene::show_health_values() const
 {
     std::vector<int> health_values;
+    health_values.reserve(heroes.size()); // Vermijd herhaaldelijk realloceren
+
     for (const auto& h : heroes)
     {
         health_values.push_back(h.get_health());
     }
 
-    health_values = sort(health_values);
+    sort(health_values);
 
     ImGui::Begin("Heroes Health Bars");
 
@@ -275,9 +431,9 @@ void Scene::show_health_values() const
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.5f, 0.f, 1.0f }); //Green
     for (const int& hp : health_values)
     {
-        std::stringstream hp_text;
-        hp_text << hp << "/" << 1000;
-        ImGui::ProgressBar((float)hp / 1000, ImVec2(-FLT_MIN, 0.0f), hp_text.str().c_str());
+        char hp_text[16];
+        snprintf(hp_text, sizeof(hp_text), "%d/1000", hp);
+        ImGui::ProgressBar((float)hp / 1000, ImVec2(-FLT_MIN, 0.0f), hp_text);
     }
     ImGui::PopStyleColor(1);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
@@ -291,12 +447,14 @@ void Scene::show_health_values() const
 void Scene::show_mana_values() const
 {
     std::vector<int> mana_values;
+    mana_values.reserve(heroes.size()); // Vermijd herhaaldelijk realloceren
+
     for (const auto& s : heroes)
     {
         mana_values.push_back(s.get_mana());
     }
 
-    mana_values = sort(mana_values);
+    sort(mana_values);
 
     ImGui::Begin("Heroes Mana Bars");
 
@@ -304,9 +462,9 @@ void Scene::show_mana_values() const
     ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.f, 0.5f, 1.0f }); //Blue
     for (const int& mana : mana_values)
     {
-        std::stringstream mana_text;
-        mana_text << mana << "/" << 1000;
-        ImGui::ProgressBar((float)mana / 1000, ImVec2(-FLT_MIN, 0.0f), mana_text.str().c_str());
+        char mana_text[16];
+        snprintf(mana_text, sizeof(mana_text), "%d/1000", mana);
+        ImGui::ProgressBar((float)mana / 1000, ImVec2(-FLT_MIN, 0.0f), mana_text);
     }
     ImGui::PopStyleColor(1);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
@@ -314,26 +472,41 @@ void Scene::show_mana_values() const
     ImGui::End();
 }
 
-std::vector<int> Scene::sort(const std::vector<int>& to_sort) const
+void Scene::sort(std::vector<int>& arr) const
 {
-    std::vector<int> sorted_list = to_sort;
+    quicksort(arr, 0, arr.size() - 1);
+}
 
-    for (size_t i = 0; i < sorted_list.size(); i++)
+void Scene::quicksort(std::vector<int>& arr, int low, int high) const
+{
+    // als bereik leeg of 1 element bevat, is al gesorteerd
+    if (low >= high) return;
+
+    // kies pivot-element (midden van bereik)
+    int pivot = arr[(low + high) / 2];
+    int left = low, right = high;
+
+    // verplaats elementen zodat kleinere links en grotere rechts van pivot komen
+    while (left <= right)
     {
-        int current_value = sorted_list.at(i);
+        // zoek van links naar rechts eerste element dat groter is dan pivot
+        while (arr[left] < pivot) left++;
 
-        //For all values before the current index,
-        //move all bigger values than current value one index forward
-        size_t j = i;
-        for (; j > 0 && sorted_list.at(j - 1) > current_value; j--)
+        // zoek van rechts naar links eerste element dat kleiner is dan pivot
+        while (arr[right] > pivot) right--;
+
+        // als left en right nog niet gekruist zijn, wissel elementen om
+        if (left <= right)
         {
-            sorted_list.at(j) = sorted_list.at(j - 1);
+            std::swap(arr[left], arr[right]);
+            left++;
+            right--;
         }
-        //Place the current value in the created gap
-        sorted_list.at(j) = current_value;
     }
 
-    return sorted_list;
+    // sorteer de twee deelarrays recursief
+    quicksort(arr, low, right);  // linkerhelft (alle waarden < pivot)
+    quicksort(arr, left, high);  // rechterhelft (alle waarden > pivot)
 }
 
 void Scene::handle_input(const float delta_time)

@@ -1,4 +1,12 @@
 #pragma once
+
+// Hash functie voor glm::ivec2 zodat unordered_set en unordered_map sneller werken
+struct IVec2Hash {
+    std::size_t operator()(const glm::ivec2& v) const noexcept {
+        return std::hash<int>()(v.x) ^ (std::hash<int>()(v.y) << 1);
+    }
+};
+
 class Terrain
 {
 public:
@@ -13,6 +21,8 @@ public:
 
     Terrain() = default;
     Terrain(const std::filesystem::path& path_to_height_map);
+
+    void initialize(vulvox::Renderer* renderer);
 
     void draw(vulvox::Renderer* renderer) const;
 
@@ -38,11 +48,24 @@ public:
     std::vector<glm::mat4> terrain_transforms;
     std::vector<uint32_t> texture_indices;
 
+
 private:
 
     std::vector<glm::vec2> reconstruct_path(const std::unordered_map<glm::ivec2, glm::ivec2>& parents, const glm::ivec2& start_position, const glm::ivec2& target_position) const;
     std::vector<glm::ivec2> get_neighbours(const glm::ivec2& node) const;
     bool is_accessible(const glm::ivec2& tile, const glm::ivec2& from) const;
+
+    // Struct voor A* knopen (met g-cost, h-cost en f-cost)
+    struct Node {
+        glm::ivec2 position;
+        float g_cost = 0.0f;  // Werkelijke kosten van start tot deze knoop
+        float h_cost = 0.0f;  // Geschatte kosten van deze knoop naar het doel
+        float f_cost = 0.0f;  // Totaal van g_cost + h_cost
+
+        bool operator>(const Node& other) const {
+            return f_cost > other.f_cost;  // Prioriteitsqueue sorteert op f_cost
+        }
+    };
 
     struct Tile_Data
     {

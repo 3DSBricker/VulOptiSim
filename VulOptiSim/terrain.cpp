@@ -85,8 +85,28 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
 
 }
 
+bool is_initialized = false;  // Bijhouden of terrein al geïnitialiseerd is
+void Terrain::initialize(vulvox::Renderer* renderer)
+{
+    if (!is_initialized) {
+        // Initialiseer het terrein eenmalig
+        // Hier kun je de bestaande data instellen (zoals terrain_transforms en texture_indices)
+        // Bijvoorbeeld als ze nog niet zijn geladen, stel ze dan in:
+        // terrain_transforms = ...  // Bijvoorbeeld ergens anders in je code geladen
+        // texture_indices = ...     // Evenzo, al gedefinieerd en geladen
+
+        is_initialized = true;  // Markeer als geïnitieerd
+    }
+}
+
 void Terrain::draw(vulvox::Renderer* renderer) const
 {
+    // Eerst controleren of de initialisatie al gedaan is
+    if (!is_initialized) {
+        const_cast<Terrain*>(this)->initialize(renderer);  // Eenmalige initialisatie
+    }
+
+    // Render het terrein
     renderer->draw_instanced_with_texture_array("cube", "texture_array_test", terrain_transforms, texture_indices);
 }
 
@@ -105,50 +125,84 @@ float Terrain::get_height(const glm::vec2& position2d) const
     return terrain_heights.at(index);
 }
 
+// functie om Manhattan afstand te berekenen (heuristiek) (|dx| + |dy|)
+auto heuristic = [](const glm::ivec2& a, const glm::ivec2& b) -> float {
+    return std::abs(a.x - b.x) + std::abs(a.y - b.y); // Manhattan afstand
+    };
+
+
+namespace glm {
+    inline bool operator==(const glm::ivec2& a, const glm::ivec2& b) {
+        return a.x == b.x && a.y == b.y;
+    }
+}
+
+
 /// <summary>
 /// Uses a pathfinding algorithm to find the shortest path from given start_position to target_position.
 /// Note: Path is stored from end to start point.
+/// A* implementatie scheelt 10 seconden
 /// </summary>
 std::vector<glm::vec2> Terrain::find_route(const glm::vec2& start_position, const glm::vec2& target_position) const
 {
+    // converteer world posities naar grid tile indices
     glm::ivec2 start_tile{ start_position.x / tile_width, start_position.y / tile_length };
     glm::ivec2 target_tile{ target_position.x / tile_width, target_position.y / tile_length };
 
-    std::queue<glm::ivec2> queue;
-    queue.push(start_tile);
+    // grid dimensies
+    int max_width = terrain_width;
+    int max_height = terrain_length;
 
-    std::unordered_set<glm::ivec2> visited;
-    visited.insert(start_tile);
+    // node structure voor A* priority queue
+    struct Node {
+        glm::ivec2 pos; // huidig tile position
+        float cost; // est. cost (G + H in A*)
 
-    //This hash map is used to track the parents in the shortest path of each visited node
+        // comparison operator voor priority queue (min-heap: lager cost nodes eerts verwerken)
+        bool operator<(const Node& other) const {
+            return cost > other.cost; // min-heap: kleinste kost bovenaan
+        }
+    };
+
+    // priority queue (open set) voor A* search, slaat nodes op die geevalueerd moeten worden
+    std::priority_queue<Node> open_set;
+    open_set.push({ start_tile, 0.f }); // start node met zero cost
+
+    // visited nodes (1D vector voor efficiency)
+    std::vector<bool> visited(max_width * max_height, false);
+    // parent map om pad reconstrueren (slaat op waar elke node vandaan kwam)
     std::unordered_map<glm::ivec2, glm::ivec2> parents;
 
-    while (!queue.empty())
+    // A* main loop
+    while (!open_set.empty())
     {
-        glm::ivec2 current = queue.front();
-        queue.pop();
+        Node current = open_set.top();  // krijg node met laagste cost
+        open_set.pop();
 
-        if (current == target_tile)
+        // als target bereikt, reconstrueer en return pad
+        if (current.pos == target_tile)
+            return reconstruct_path(parents, start_tile, current.pos);
+
+        // converteer 2D grid positie naar 1D index voor visited array
+        int index = current.pos.x * max_width + current.pos.y;
+        if (visited[index]) continue;   // skip als al processed
+        visited[index] = true;  // markeer visited
+
+        // verwerk alle valid neighboring tiles
+        for (const glm::ivec2& neighbour : get_neighbours(current.pos))
         {
-            return reconstruct_path(parents, start_tile, current);
-        }
-
-        std::vector<glm::ivec2> neighbours = get_neighbours(current);
-
-        for (const glm::ivec2& neighbour : neighbours)
-        {
-            if (!visited.contains(neighbour))
-            {
-                visited.insert(neighbour);
-                parents[neighbour] = current;
-                queue.emplace(neighbour);
+            int neighbour_index = neighbour.x * max_width + neighbour.y;
+            if (!visited[neighbour_index]) {
+                parents[neighbour] = current.pos;   // sla parent op for pad reconstructie
+                float priority = current.cost + 1 + heuristic(neighbour, target_tile);  // A* cost calculatie: G + H
+                open_set.push({ neighbour, priority }); // voeg neighbor toe aan priority queue
             }
         }
     }
 
-    //Return empty list if we didn't reach the target position
-    return std::vector<glm::vec2>();
+    return std::vector<glm::vec2>(); // Geen pad gevonden
 }
+
 
 bool Terrain::in_bounds(const glm::vec2& position2d) const
 {

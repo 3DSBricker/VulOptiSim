@@ -4,7 +4,7 @@ class Magic_Staff
 {
 public:
 
-    Magic_Staff(const std::string& name, const glm::vec3& position, const Terrain* terrain);
+    Magic_Staff(const glm::vec3& position, const Terrain* terrain);
 
     void update(const float delta_time, std::vector<Hero>& heroes, std::vector<Lightning>& active_lightning, std::vector<Projectile>& active_projectiles);
     void draw(vulvox::Renderer* renderer) const;
@@ -12,14 +12,16 @@ public:
     float get_lightning_cooldown() const { return lightning_cooldown - current_lightning_cooldown; };
     float get_shoot_cooldown() const { return shoot_cooldown - current_shoot_cooldown; };
 
+    glm::mat4 get_transform_matrix() const {
+        return transform.get_matrix(); // Return de matrix vanuit de transform
+    }
+
 private:
 
     void spawn_lightning(std::vector<Lightning>& active_lightning) const;
     void spawn_projectile(std::vector<Projectile>& active_projectiles, std::vector<Hero>& heroes) const;
 
     Hero* find_closest_target(std::vector<Hero>& heroes) const;
-
-    std::string name;
 
     float animation_time = 0.f;
 

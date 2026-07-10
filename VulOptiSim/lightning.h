@@ -8,6 +8,7 @@ public:
     Lightning(glm::vec3 position);
 
     void update(const float delta_time, const Camera& camera, std::vector<Hero>& heroes);
+
     void register_draw(Sprite_Manager<Lightning>& sprite_manager) const;
 
 

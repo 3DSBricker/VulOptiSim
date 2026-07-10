@@ -1,8 +1,13 @@
 #include "pch.h"
 #include "shield.h"
 
-Shield::Shield(const std::string& texture_array_name, const std::vector<Hero>& heroes)
+Shield::Shield(const std::string& texture_array_name)
     : texture_name(texture_array_name)
+{
+
+}
+
+void Shield::update(const std::vector<Hero>& heroes)
 {
     //Gather all hero positions if they have mana left
     std::vector<glm::vec3> points;
