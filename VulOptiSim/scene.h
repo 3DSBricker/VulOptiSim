@@ -21,6 +21,7 @@ public:
 
     void load_models_and_textures() const;
     void load_effects() const;
+    void load_animation_effects() const; // Deferred: fireball/lightning textures
     void spawn_heroes();
     void spawn_staves();
 
@@ -72,12 +73,14 @@ private:
         std::unordered_map<int, std::vector<int>> cells;
         float cell_size;
 
-        Grid(float size) : cell_size(size) {}
+        Grid(float size) : cell_size(size) {
+            cells.reserve(20000); // Pre-allocate voor 9000 heroes met cell_size=8
+        }
 
         int get_cell_id(const glm::vec2& pos) const {
             int x = static_cast<int>(pos.x / cell_size);
             int y = static_cast<int>(pos.y / cell_size);
-            return (x << 16) | y; // Unieke sleutel voor de cel
+            return (x << 16) | y;
         }
 
         void add_hero(int hero_index, const glm::vec2& position) {
@@ -87,17 +90,26 @@ private:
         const std::vector<int>& get_nearby_heroes(const glm::vec2& position) const {
             static const std::vector<int> empty;
             auto it = cells.find(get_cell_id(position));
-            if (it == cells.end())
-            {
-                return empty;
-            }
+            if (it == cells.end()) return empty;
             return it->second;
         }
 
-        void clear() { cells.clear(); }
+        void clear() { 
+            cells.clear(); // Snel: clears hele map O(1)
+        }
     };
 
     Grid hero_grid;
 
+    // Globale route cache voor pathfinding optimization (thread-safe)
+    std::unordered_map<glm::ivec2, std::vector<glm::vec2>, IVec2Hash> global_route_cache;
+    std::mutex route_cache_mutex;
+
+    // Lazy loading voor animation textures
+    mutable bool lightning_textures_loaded = false;
+    mutable bool fireball_textures_loaded = false;
+    mutable std::mutex animation_load_mutex;
+
+    void ensure_animation_textures_loaded() const;
 
 };

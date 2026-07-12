@@ -3,8 +3,9 @@
 
 Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer),
 pool(std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()))),
-hero_grid(10.0f) // Grid om botsingsdetectie te optimaliseren (cell-size = 10 eenheden)
+hero_grid(8.0f) // Kleinere cells = minder heroes per cell = snellere checks
 {
+    auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<std::future<void>> future;
     glfwGetCursorPos(this->renderer->get_window(), &prev_mouse_pos.x, &prev_mouse_pos.y);
 
@@ -14,14 +15,28 @@ hero_grid(10.0f) // Grid om botsingsdetectie te optimaliseren (cell-size = 10 ee
 
     camera = Camera(camera_pos, camera_up, camera_direction, 100.f, 100.f);
 
+    auto terrain_start = std::chrono::high_resolution_clock::now();
     terrain = Terrain(TERRAIN_PATH);
+    auto terrain_end = std::chrono::high_resolution_clock::now();
+    float terrain_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(terrain_end - terrain_start).count();
 
     shield = Shield{ "shield" };
 
-    load_models_and_textures();
+    // Laad models & textures PARALLEL met effects/spawn/staves
+    future.push_back(pool.enqueue([this] {
+        auto models_start = std::chrono::high_resolution_clock::now();
+        load_models_and_textures();
+        auto models_end = std::chrono::high_resolution_clock::now();
+        float models_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(models_end - models_start).count();
+        std::cout << "Models & textures loading took: " << models_duration << " ms" << std::endl;
+    }));
 
     future.push_back(pool.enqueue([this] {
+        auto effects_start = std::chrono::high_resolution_clock::now();
         load_effects();
+        auto effects_end = std::chrono::high_resolution_clock::now();
+        float effects_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(effects_end - effects_start).count();
+        std::cout << "Essential effects loading took: " << effects_duration << " ms" << std::endl;
         }));
 
     future.push_back(pool.enqueue([this] {
@@ -33,15 +48,35 @@ hero_grid(10.0f) // Grid om botsingsdetectie te optimaliseren (cell-size = 10 ee
     }));
 
     future.push_back(pool.enqueue([this] {
+        auto staves_start = std::chrono::high_resolution_clock::now();
         spawn_staves();
+        auto staves_end = std::chrono::high_resolution_clock::now();
+        float staves_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(staves_end - staves_start).count();
+        std::cout << "Staves loading took: " << staves_duration << " ms" << std::endl;
         }));
 
     // wacht tot alle taken klaar zijn
-    for (auto& f : future) { // scheelt 3 seconden
+    for (auto& f : future) {
         f.get();
     }
 
-    std::cout << "Scene loaded." << std::endl;
+    auto total_end = std::chrono::high_resolution_clock::now();
+    float total_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(total_end - total_start).count();
+
+    std::cout << "\n=== Scene Loading Times ===\n"
+              << "Terrain loading: " << terrain_duration << " ms\n"
+              << "Total scene load (parallel): " << total_duration << " ms\n"
+              << "============================\n" << std::endl;
+
+    // Laad animation effects ASYNC na scene klaar (niet blocking)
+    std::cout << "\n>>> Background: Loading animation effects (parallel)...\n" << std::endl;
+    pool.enqueue([this] {
+        auto anim_start = std::chrono::high_resolution_clock::now();
+        load_animation_effects();
+        auto anim_end = std::chrono::high_resolution_clock::now();
+        float anim_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(anim_end - anim_start).count();
+        std::cout << "Animation effects loading took: " << anim_duration << " ms (done in background)\n" << std::endl;
+    });
 }
 
 void Scene::load_models_and_textures() const
@@ -64,23 +99,43 @@ void Scene::load_models_and_textures() const
 
 void Scene::load_effects() const
 {
-    //Load all the models and textures we're going to need into GPU memory
-
-    //Terrain textures
+    // ECHT essentieel: terrain textures die ALTIJD zichtbaar zijn
     std::vector<std::filesystem::path> texture_paths{
-        CUBE_SEA_TEXTURE_PATH,  //Sea
-        CUBE_GRASS_FLOWER_TEXTURE_PATH, //Lab floor
-        CUBE_CONCRETE_WALL_TEXTURE_PATH, //Lab walls
-        CUBE_MOSS_TEXTURE_PATH }; //Floor
+        CUBE_SEA_TEXTURE_PATH,
+        CUBE_GRASS_FLOWER_TEXTURE_PATH,
+        CUBE_CONCRETE_WALL_TEXTURE_PATH,
+        CUBE_MOSS_TEXTURE_PATH };
     renderer->load_texture_array("texture_array_test", texture_paths);
+    // Alles ander (shield, lightning, fireball) laad async
+}
 
-    //Effects
-    std::vector<std::filesystem::path> shield_path{ SHIELD_TEXTURE_PATH };
-    renderer->load_texture_array("shield", shield_path);
+void Scene::load_animation_effects() const
+{
+    // Parallelize texture array loading: 3 threads, elke array apart
+    std::vector<std::future<void>> futures;
+    
+    futures.push_back(std::async(std::launch::async, [this] {
+        std::vector<std::filesystem::path> shield_path{ SHIELD_TEXTURE_PATH };
+        renderer->load_texture_array("shield", shield_path);
+    }));
+    
+    futures.push_back(std::async(std::launch::async, [this] {
+        renderer->load_texture_array("lightning", LIGHTNING_TEXTURE_PATHS);
+    }));
+    
+    futures.push_back(std::async(std::launch::async, [this] {
+        renderer->load_texture_array("fireball", FIREBALL_TEXTURE_PATHS);
+    }));
+    
+    // Wacht op alle texture arrays tegelijk (parallel, niet sequentieel)
+    for (auto& f : futures) {
+        f.get();
+    }
+}
 
-    renderer->load_texture_array("lightning", LIGHTNING_TEXTURE_PATHS);
-
-    renderer->load_texture_array("fireball", FIREBALL_TEXTURE_PATHS);
+void Scene::ensure_animation_textures_loaded() const
+{
+    // Placeholder - niet meer nodig met background loading
 }
 
 void Scene::spawn_heroes()
@@ -96,7 +151,7 @@ void Scene::spawn_heroes()
 
     float start_corner_y = 9.f * terrain.tile_width;
     float spawn_offset = terrain.tile_width / 3.f;
-    float route_cache_resolution = terrain.tile_width * 2.f; // Grid-grootte voor routecache
+    float route_cache_resolution = terrain.tile_width * 6.f; // Verhoogd van 2 naar 6 voor minder unique routes
 
     std::cout << "Spawning characters and calculating routes..." << std::endl;
 
@@ -108,8 +163,6 @@ void Scene::spawn_heroes()
         futures.push_back(pool.enqueue([this, s, spawn_offset, start_corner_y, spawn_start_y, start_area_tile_offset, target, route_cache_resolution] {
             std::vector<Hero> local_heroes;
             local_heroes.reserve(900); // Voorkom reallocaties
-            std::unordered_map<glm::ivec2, std::vector<glm::vec2>, IVec2Hash> route_cache;
-            route_cache.reserve(64);
 
             float start_area_offset = s * start_area_tile_offset * terrain.tile_width;
             float base_x = start_corner_y + start_area_offset;
@@ -122,27 +175,34 @@ void Scene::spawn_heroes()
                 float z = spawn_start_y + (j * spawn_offset);
                 float y = terrain.get_height(glm::vec2(x, z));
                 glm::vec2 start_pos = glm::vec2(x, z);
-                glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution); // afgeronde grid positie
+                glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution);
                 
-                    // check of route al bestaat
-                    auto route_it = route_cache.find(grid_pos);
-                    if (route_it == route_cache.end()) {
-                        route_it = route_cache.emplace(grid_pos, terrain.find_route(start_pos, target)).first;
+                // Check globale cache eerst (thread-safe)
+                std::vector<glm::vec2> route;
+                {
+                    std::lock_guard<std::mutex> lock(route_cache_mutex);
+                    auto route_it = global_route_cache.find(grid_pos);
+                    if (route_it != global_route_cache.end()) {
+                        route = route_it->second;
+                    } else {
+                        route = terrain.find_route(start_pos, target);
+                        global_route_cache[grid_pos] = route;
                     }
+                }
 
-                    // maak hero en set route
-                    local_heroes.emplace_back("frieren-blob", "frieren-blob", Transform(glm::vec3(x, y, z)), 20.f);
-                    local_heroes.back().set_route(route_it->second);
+                // Maak hero en set route
+                local_heroes.emplace_back("frieren-blob", "frieren-blob", Transform(glm::vec3(x, y, z)), 20.f);
+                local_heroes.back().set_route(route);
                 }
             }
 
-            // voeg lokale lijst toe aan globale lijst, met mutex (vanwege thread safety)
+            // Voeg lokale lijst toe aan globale lijst, met mutex (vanwege thread safety)
             std::lock_guard<std::mutex> lock(hero_mutex);
             heroes.insert(heroes.end(), local_heroes.begin(), local_heroes.end());
             }));
     }
 
-    // wacht tot alle taken klaar zijn
+    // Wacht tot alle taken klaar zijn
     for (auto& f : futures) {
         f.get();
     }
@@ -241,13 +301,19 @@ void Scene::check_collisions()
 
                     if (i == j || !hero_j.is_active()) continue; // Voorkom zelfbotsing en botsing met inactieve helden
 
+                    // Early exit: SQUARED distance check eerst (sneller dan circle_collision + glm::length)
+                    const float max_dist_sq = (hero_i.get_collision_radius() + hero_j.get_collision_radius() + 1.0f);
+                    const float max_dist_sq_val = max_dist_sq * max_dist_sq;
+                    glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
+                    const float distance_sq = glm::dot(direction, direction); // Veel sneller dan glm::length()
+                    if (distance_sq > max_dist_sq_val) continue;
+                    
                     // Controleer of de twee helden botsen
                     if (circle_collision(hero_i.get_position2d(), hero_i.get_collision_radius(),
                         hero_j.get_position2d(), hero_j.get_collision_radius()))
                     {
                         // Bereken duwrichting en kracht op basis van de overlap
-                        glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
-                        const float distance = glm::length(direction);
+                        const float distance = std::sqrt(distance_sq);
                         if (distance > 0.0001f)
                         {
                             forces[j] += glm::normalize(direction) * ((hero_i.get_collision_radius()) - (distance / 2));
@@ -280,7 +346,19 @@ void Scene::check_collisions()
 
 void Scene::update(const float delta_time)
 {
+    // Profiling voor bottleneck detection
+    static auto frame_count = 0;
+    static auto total_frame_time = 0.0f;
+    static auto total_input_time = 0.0f;
+    static auto total_collision_time = 0.0f;
+    static auto total_hero_time = 0.0f;
+    
+    auto frame_start = std::chrono::high_resolution_clock::now();
+
+    auto input_start = std::chrono::high_resolution_clock::now();
     handle_input(delta_time);
+    auto input_end = std::chrono::high_resolution_clock::now();
+    total_input_time += std::chrono::duration<float, std::chrono::milliseconds::period>(input_end - input_start).count();
 
     if (follow_mode)
     {
@@ -301,9 +379,12 @@ void Scene::update(const float delta_time)
     renderer->set_view_matrix(camera.get_view_matrix());
 
     // Collision is expensive and can run at a lower tick rate than movement/rendering.
-    if (update_frame % 2 == 0)
+    if (update_frame % 4 == 0)
     {
+        auto collision_start = std::chrono::high_resolution_clock::now();
         check_collisions();
+        auto collision_end = std::chrono::high_resolution_clock::now();
+        total_collision_time += std::chrono::duration<float, std::chrono::milliseconds::period>(collision_end - collision_start).count();
     }
 
     // Shield hull is expensive and does not need to be rebuilt every frame.
@@ -316,6 +397,8 @@ void Scene::update(const float delta_time)
 
     const size_t worker_count = std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()));
     const size_t hero_batch = std::max<size_t>(1, (heroes.size() + worker_count - 1) / worker_count);
+    
+    auto hero_update_start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < heroes.size(); i += hero_batch) {
         // Bereken het einde van de huidige batch
         size_t end = std::min(i + hero_batch, heroes.size());
@@ -332,6 +415,8 @@ void Scene::update(const float delta_time)
     for (auto& f : futures) {
         f.get();
     }
+    auto hero_update_end = std::chrono::high_resolution_clock::now();
+    total_hero_time += std::chrono::duration<float, std::chrono::milliseconds::period>(hero_update_end - hero_update_start).count();
 
     for (auto& staff : staves)
     {
@@ -355,6 +440,34 @@ void Scene::update(const float delta_time)
     //Remove inactive projectiles
     const auto [first_p, last_p] = std::ranges::remove_if(projectiles, [](const Projectile& p) { return !p.is_active(); });
     projectiles.erase(first_p, last_p);
+
+    // Profiling: report FPS every 60 frames (DISABLED - cout I/O causes stalls)
+    // Uncomment for benchmarking only
+    auto frame_end = std::chrono::high_resolution_clock::now();
+    float frame_time = std::chrono::duration<float, std::chrono::milliseconds::period>(frame_end - frame_start).count();
+    total_frame_time += frame_time;
+    frame_count++;
+    
+    // Debug: uncomment to enable FPS reporting
+    /*
+    if (frame_count >= 60) {
+        float avg_frame_time = total_frame_time / 60.0f;
+        float fps = 1000.0f / avg_frame_time;
+        float avg_input = total_input_time / 60.0f;
+        float avg_collision = total_collision_time / 15.0f; // runs every 4 frames
+        float avg_hero = total_hero_time / 60.0f;
+        
+        std::cout << "FPS: " << fps << " (avg frame: " << avg_frame_time << " ms)\n"
+                  << "  Input: " << avg_input << " ms | Collision: " << avg_collision 
+                  << " ms | Heroes: " << avg_hero << " ms\n";
+        
+        frame_count = 0;
+        total_frame_time = 0.0f;
+        total_input_time = 0.0f;
+        total_collision_time = 0.0f;
+        total_hero_time = 0.0f;
+    }
+    */
 
     update_frame++;
 }

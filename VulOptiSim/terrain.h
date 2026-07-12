@@ -33,6 +33,8 @@ public:
     bool in_bounds(const glm::vec2& position2d) const;
     void clamp_to_bounds(glm::vec2& position2d) const;
 
+    size_t get_voxel_count() const { return terrain_transforms.size(); }
+
     int map_width = 0;
     int map_length = 0;
 
