@@ -47,6 +47,54 @@ public:
     }
 
 
+    template<typename Func>
+    void parallel_for(size_t count, Func&& func)
+        {
+            if(count == 0)
+                return;
+
+            const size_t thread_count = workers.size();
+
+            // Kleine arrays gewoon single-thread
+            if(count < thread_count * 4)
+            {
+                for(size_t i = 0; i < count; i++)
+                    func(i);
+
+                return;
+            }
+
+
+            size_t chunk_size = (count + thread_count - 1) / thread_count;
+
+            std::vector<std::future<void>> futures;
+            futures.reserve(thread_count);
+
+
+            for(size_t start = 0; start < count; start += chunk_size)
+            {
+                size_t end = std::min(start + chunk_size, count);
+
+
+                futures.push_back(
+                    enqueue([&, start, end]()
+                    {
+                        for(size_t i = start; i < end; i++)
+                        {
+                            func(i);
+                        }
+                    })
+                );
+            }
+
+
+            // Wacht tot alle blokken klaar zijn
+            for(auto& future : futures)
+            {
+                future.get();
+            }
+        }
+    
     template <class T>
     [[nodiscard]] auto enqueue(T task) -> std::future<decltype(task())>
     {

@@ -17,10 +17,14 @@ public:
     }
 
 private:
-
+    
     void spawn_lightning(std::vector<Lightning>& active_lightning) const;
-    void spawn_projectile(std::vector<Projectile>& active_projectiles, std::vector<Hero>& heroes) const;
+    void spawn_projectile(std::vector<Projectile>& active_projectiles);
 
+    Hero* current_target = nullptr;
+    float target_check_timer = 0.0f;
+    static constexpr float target_check_interval = 0.2f; // 5x per seconde
+    
     Hero* find_closest_target(std::vector<Hero>& heroes) const;
 
     std::string name;

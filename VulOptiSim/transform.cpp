@@ -32,17 +32,20 @@ void Transform::set_position2d(const float x, const float z)
 {
     position.x = x;
     position.z = z;
+    dirty=true;
 }
 
 void Transform::set_position2d(const glm::vec2& position2d)
 {
     position.x = position2d.x;
     position.z = position2d.y;
+    dirty=true;
 }
 
 void Transform::set_height(const float height)
 {
     position.y = height;
+    dirty=true;
 }
 
 void Transform::set_direction2d(const glm::vec2& direction2d)
@@ -57,9 +60,11 @@ void Transform::set_direction2d(const glm::vec2& direction2d)
 
 glm::mat4 Transform::get_matrix() const
 {
-    glm::mat4 translate = glm::translate(glm::mat4(1.0f), position + offset);
-    glm::mat4 rotate = glm::mat4_cast(rotation);
-    glm::mat4 scale_matrix = glm::scale(glm::mat4(1.0f), scale);
+    if(dirty)
+    {
+        update_matrix();
+        dirty=false;
+    }
 
-    return translate * rotate * scale_matrix;
+    return matrix;
 }

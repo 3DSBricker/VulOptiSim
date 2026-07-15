@@ -35,6 +35,7 @@ private:
     bool show_debug_windows = false;
     bool f1_was_pressed = false;
     size_t update_frame = 0;
+    size_t draw_frame = 0;
 
     void handle_input(const float delta_time);
     void show_controls();

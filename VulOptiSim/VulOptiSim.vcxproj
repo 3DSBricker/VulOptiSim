@@ -111,7 +111,8 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\gtest;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions></AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -120,6 +121,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>glfw3.lib;VulVoxOptimizationProject.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(solutiondir)includes\glfw-3.4\WIN64\lib-vc2022;$(solutiondir)includes\VulVoxRenderer\lib\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions></AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release_Test|x64'">

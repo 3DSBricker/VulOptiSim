@@ -1,5 +1,8 @@
 #include "pch.h"
 #include "scene.h"
+#include <numeric>
+#include <execution>
+#include <algorithm> // Nodig voor std::for_each
 
 Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer),
 pool(std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()))),
@@ -133,11 +136,6 @@ void Scene::load_animation_effects() const
     }
 }
 
-void Scene::ensure_animation_textures_loaded() const
-{
-    // Placeholder - niet meer nodig met background loading
-}
-
 void Scene::spawn_heroes()
 {
     //Transform hero_transform;
@@ -207,6 +205,14 @@ void Scene::spawn_heroes()
         f.get();
     }
 
+    for(size_t i=0;i<heroes.size();i++)
+    {
+        hero_grid.add_hero(
+            i,
+            heroes[i].get_position2d()
+        );
+    }
+    
    // Log::get_instance()->add_log("Spawned %d characters.\n", spawn_count);
 }
 void Scene::spawn_staves()
@@ -245,266 +251,247 @@ size_t Scene::get_staff_count() const
 /**
  * Controleert botsingen tussen actieve helden en duwt ze uit elkaar indien nodig.
  */
+
 void Scene::check_collisions()
 {
-    // Clear grid, deze manier vanwege reallocaties
-    hero_grid.clear();
-
-    // helden toevoegen
-    for (size_t i = 0; i < heroes.size(); i++) {
-        if (heroes[i].is_active()) {
-            hero_grid.add_hero(i, heroes[i].get_position2d());
-        }
+    // 2. Buffers voorbereiden (Alleen resize als aantal helden verandert!)
+    const size_t num_workers = 4; // Of std::thread::hardware_concurrency()
+    if (collision_force_buffers.size() != num_workers || collision_force_buffers[0].size() != heroes.size())
+    {
+        collision_force_buffers.resize(num_workers, std::vector<glm::vec2>(heroes.size()));
     }
 
-    const size_t worker_count = std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()));
-    const size_t batch_size = std::max<size_t>(1, (heroes.size() + worker_count - 1) / worker_count);
+    // 3. Parallelle berekening (Zonder std::future / pool overhead)
+    // We gebruiken een index-bereik om de parallelle uitvoering te sturen
+    std::vector<size_t> worker_indices(num_workers);
+    std::iota(worker_indices.begin(), worker_indices.end(), 0);
 
-    if (collision_force_buffers.size() != worker_count)
-    {
-        collision_force_buffers.resize(worker_count);
-    }
+    std::for_each(std::execution::par, worker_indices.begin(), worker_indices.end(), [this, num_workers](size_t worker_id) {
+        
+        auto& forces = collision_force_buffers[worker_id];
+        // Reset alleen onze eigen buffer
+        std::fill(forces.begin(), forces.end(), glm::vec2{0.f});
 
-    for (auto& forces : collision_force_buffers)
-    {
-        forces.assign(heroes.size(), glm::vec2{ 0.f, 0.f });
-    }
+        // Bereken chunk voor deze worker
+        size_t chunk_size = (heroes.size() + num_workers - 1) / num_workers;
+        size_t start = worker_id * chunk_size;
+        size_t end = std::min(start + chunk_size, heroes.size());
 
-    std::vector<std::future<void>> futures;
-    futures.reserve(worker_count);
+        for (size_t i = start; i < end; ++i) {
+            const auto& hero_i = heroes[i];
+            if (!hero_i.is_active()) continue;
 
-    for (size_t worker = 0; worker < worker_count; worker++)
-    {
-        const size_t batch_start = worker * batch_size;
-        const size_t batch_end = std::min(batch_start + batch_size, heroes.size());
+            const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
+            for (int j : nearby) {
+                // Let op: we checken hier j (de buurman)
+                if (i >= (size_t)j || !heroes[j].is_active()) continue;
 
-        if (batch_start >= batch_end)
-        {
-            break;
-        }
+                const auto& hero_j = heroes[j];
+                
+                // Squared distance check (sneller)
+                const float radius_sum = hero_i.get_collision_radius() + hero_j.get_collision_radius();
+                const glm::vec2 diff = hero_j.get_position2d() - hero_i.get_position2d();
+                const float dist_sq = glm::dot(diff, diff);
 
-        futures.push_back(pool.enqueue([this, worker, batch_start, batch_end] {
-            auto& forces = collision_force_buffers[worker];
+                if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f)
+                {
+                    const float dist = std::sqrt(dist_sq);
 
-            // Controleer botsingen binnen dezelfde grid-cellen
-            for (size_t i = batch_start; i < batch_end; i++) {
+                    const glm::vec2 force =
+                        glm::normalize(diff) * (radius_sum - dist);
 
-                const auto& hero_i = heroes[i];  // maak referentie naar heroes[i]
-
-                if (!hero_i.is_active()) continue;
-
-                // Haal nabije helden op binnen dezelfde grid-cel
-                const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
-
-                for (int j : nearby) {
-                    const auto& hero_j = heroes[j];  // maak referentie naar heroes[j]
-
-                    if (i == j || !hero_j.is_active()) continue; // Voorkom zelfbotsing en botsing met inactieve helden
-
-                    // Early exit: SQUARED distance check eerst (sneller dan circle_collision + glm::length)
-                    const float max_dist_sq = (hero_i.get_collision_radius() + hero_j.get_collision_radius() + 1.0f);
-                    const float max_dist_sq_val = max_dist_sq * max_dist_sq;
-                    glm::vec2 direction = hero_j.get_position2d() - hero_i.get_position2d();
-                    const float distance_sq = glm::dot(direction, direction); // Veel sneller dan glm::length()
-                    if (distance_sq > max_dist_sq_val) continue;
-                    
-                    // Controleer of de twee helden botsen
-                    if (circle_collision(hero_i.get_position2d(), hero_i.get_collision_radius(),
-                        hero_j.get_position2d(), hero_j.get_collision_radius()))
-                    {
-                        // Bereken duwrichting en kracht op basis van de overlap
-                        const float distance = std::sqrt(distance_sq);
-                        if (distance > 0.0001f)
-                        {
-                            forces[j] += glm::normalize(direction) * ((hero_i.get_collision_radius()) - (distance / 2));
-                        }
-                    }
+                    forces[i] -= force;
+                    forces[j] += force;
                 }
             }
-            }));
-    }
+        }
+    });
 
-    for (auto& f : futures) {
-        f.get();
-    }
-
-    for (size_t hero_index = 0; hero_index < heroes.size(); hero_index++)
-    {
-        glm::vec2 force{ 0.f, 0.f };
-        for (const auto& forces : collision_force_buffers)
-        {
-            force += forces[hero_index];
+    // 4. Integratie (Accumuleren en toepassen)
+    // Dit deel is snel genoeg single-threaded in vergelijking met de collision-fase
+    for (size_t i = 0; i < heroes.size(); i++) {
+        glm::vec2 total_force{ 0.f };
+        for (size_t w = 0; w < num_workers; w++) {
+            total_force += collision_force_buffers[w][i];
         }
 
-        if (glm::length2(force) > 0.f)
-        {
-            heroes[hero_index].apply_force(force);
+        if (glm::length2(total_force) > 0.f) {
+            heroes[i].apply_force(total_force);
         }
     }
-
 }
 
+#include <execution> // Voor parallelle uitvoering
 void Scene::update(const float delta_time)
 {
-    // Profiling voor bottleneck detection
-    static auto frame_count = 0;
-    static auto total_frame_time = 0.0f;
-    static auto total_input_time = 0.0f;
-    static auto total_collision_time = 0.0f;
-    static auto total_hero_time = 0.0f;
+    const uint32_t phase = update_frame++ & 3u;
     
-    auto frame_start = std::chrono::high_resolution_clock::now();
-
-    auto input_start = std::chrono::high_resolution_clock::now();
     handle_input(delta_time);
-    auto input_end = std::chrono::high_resolution_clock::now();
-    total_input_time += std::chrono::duration<float, std::chrono::milliseconds::period>(input_end - input_start).count();
-
-    if (follow_mode)
+    
+    // Camera volgen
+    if (follow_mode && !heroes.empty())
     {
-        auto it = std::ranges::max_element(heroes,
-            [](const Hero& a, const Hero& b) {
+        const auto it = std::ranges::max_element(heroes, [](const Hero& a, const Hero& b)
+            {
                 return a.get_position().z < b.get_position().z;
-            }
-        );
-
-        glm::vec3 new_camera_position{ -28.0f, 305.5f, it->get_position().z };
-        camera.set_position(new_camera_position);
-
-        glm::vec3 camera_to_furthest = it->get_position() - camera.get_position();
-        camera.set_direction(camera_to_furthest);
+            });
+        static float last_z = std::numeric_limits<float>::lowest();
+        const glm::vec3 hero_pos = it->get_position();
+        if (std::abs(hero_pos.z - last_z) > 0.001f)
+        {
+            last_z = hero_pos.z;
+            const glm::vec3 camera_pos{
+                -28.0f,
+                305.5f,
+                hero_pos.z
+            };
+            camera.set_position(camera_pos);
+            camera.set_direction(hero_pos - camera_pos);
+        }
     }
-
 
     renderer->set_view_matrix(camera.get_view_matrix());
 
-    // Collision is expensive and can run at a lower tick rate than movement/rendering.
-    if (update_frame % 4 == 0)
+    // Heroes
+    pool.parallel_for(
+        heroes.size(),
+        [&](size_t i)
+        {
+            heroes[i].update(delta_time, terrain);
+        });
+    
+    // Collision + shield update slechts iedere 4 frames
+    if(phase == 0)
     {
-        auto collision_start = std::chrono::high_resolution_clock::now();
         check_collisions();
-        auto collision_end = std::chrono::high_resolution_clock::now();
-        total_collision_time += std::chrono::duration<float, std::chrono::milliseconds::period>(collision_end - collision_start).count();
     }
+    
+    if(phase == 1)
+    {
+        pool.parallel_for(projectiles.size(), [&](size_t i)
+        {
+            projectiles[i].update(
+                delta_time * 4.0f,
+                camera,
+                shield,
+                heroes);
+        });    }
 
-    // Shield hull is expensive and does not need to be rebuilt every frame.
-    if (update_frame % 4 == 0)
+    if(phase == 2)
     {
         shield.update(heroes);
     }
-
-    std::vector<std::future<void>> futures;
-
-    const size_t worker_count = std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()));
-    const size_t hero_batch = std::max<size_t>(1, (heroes.size() + worker_count - 1) / worker_count);
     
-    auto hero_update_start = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < heroes.size(); i += hero_batch) {
-        // Bereken het einde van de huidige batch
-        size_t end = std::min(i + hero_batch, heroes.size());
+    if(phase == 3)
+    {
+        for(auto& l : active_lightning)
+        {
+            l.update(
+                delta_time * 4.0f,
+                camera,
+                heroes);
+        }
+        
+        for(auto& staff : staves)
+        {
+            staff.update(
+                delta_time * 4.0f,
+                heroes,
+                active_lightning,
+                projectiles);
+        }
+    }
 
-        // Maak een thread voor elke batch
-        futures.push_back(pool.enqueue([this, delta_time, end, i] {
-            for (size_t j = i; j < end; ++j) {
-                heroes[j].update(delta_time, terrain);
+    // Fast cleanup (volgorde niet behouden)
+    auto cleanup = [](auto& container)
+    {
+        size_t i = 0;
+
+        while (i < container.size())
+        {
+            if (!container[i].is_active())
+            {
+                container[i] = std::move(container.back());
+                container.pop_back();
             }
-            }));
-    }
+            else
+            {
+                ++i;
+            }
+        }
+    };
 
-    // wacht
-    for (auto& f : futures) {
-        f.get();
-    }
-    auto hero_update_end = std::chrono::high_resolution_clock::now();
-    total_hero_time += std::chrono::duration<float, std::chrono::milliseconds::period>(hero_update_end - hero_update_start).count();
+    if(!projectiles.empty())
+        cleanup(projectiles);
 
-    for (auto& staff : staves)
-    {
-        staff.update(delta_time, heroes, active_lightning, projectiles);
-    }
-
-    for (auto& lightning : active_lightning)
-    {
-        lightning.update(delta_time, camera, heroes);
-    }
-
-    //Remove inactive lightning
-    const auto [first_l, last_l] = std::ranges::remove_if(active_lightning, [](const Lightning& l) { return !l.is_active(); });
-    active_lightning.erase(first_l, last_l);
-
-    for (auto& projectile : projectiles)
-    {
-        projectile.update(delta_time, camera, shield, heroes);
-    }
-
-    //Remove inactive projectiles
-    const auto [first_p, last_p] = std::ranges::remove_if(projectiles, [](const Projectile& p) { return !p.is_active(); });
-    projectiles.erase(first_p, last_p);
-
-    // Profiling: report FPS every 60 frames (DISABLED - cout I/O causes stalls)
-    // Uncomment for benchmarking only
-    auto frame_end = std::chrono::high_resolution_clock::now();
-    float frame_time = std::chrono::duration<float, std::chrono::milliseconds::period>(frame_end - frame_start).count();
-    total_frame_time += frame_time;
-    frame_count++;
+    if(!active_lightning.empty())
+        cleanup(active_lightning);
     
-    // Debug: uncomment to enable FPS reporting
-    /*
-    if (frame_count >= 60) {
-        float avg_frame_time = total_frame_time / 60.0f;
-        float fps = 1000.0f / avg_frame_time;
-        float avg_input = total_input_time / 60.0f;
-        float avg_collision = total_collision_time / 15.0f; // runs every 4 frames
-        float avg_hero = total_hero_time / 60.0f;
-        
-        std::cout << "FPS: " << fps << " (avg frame: " << avg_frame_time << " ms)\n"
-                  << "  Input: " << avg_input << " ms | Collision: " << avg_collision 
-                  << " ms | Heroes: " << avg_hero << " ms\n";
-        
-        frame_count = 0;
-        total_frame_time = 0.0f;
-        total_input_time = 0.0f;
-        total_collision_time = 0.0f;
-        total_hero_time = 0.0f;
-    }
-    */
 
-    update_frame++;
 }
 
 void Scene::draw()
 {
-    //On using concurrency here:
-    //  The graphics library copies the data to GPU memory so you can change the data after the draw functions of the renderer return.
-    //  The actual drawing runs parallel to the host (CPU) execution.
-    //  Make sure the data needed for drawing (position etc.) is ready before calling the corresponding draw functions or weird things happen.
-    //  Calling draw functions outside of this functions lifetime will crash the program!
+    const size_t hero_count  = heroes.size();
+    const size_t staff_count = staves.size();
+    
+    hero_transforms.resize(hero_count);
+    staff_transforms.resize(staff_count);
 
+    // --- OPTIMALISATIE 1: FRONT-TO-BACK SORTING ---
+    // 1. Maak een lijst met indices en hun afstand-kwadraat tot de camera
+    struct DistanceEntry {
+        size_t original_index;
+        float distance_sq;
+    };
+    
+    std::vector<DistanceEntry> sorted_indices(hero_count);
+    const glm::vec3 cam_pos = camera.get_position();
 
-    hero_transforms.clear();
-    hero_transforms.reserve(heroes.size());
-    for (const auto& hero : heroes)
+    // Snel de afstanden berekenen (dot product is sneller dan sqrt!)
+    for (size_t i = 0; i < hero_count; ++i)
     {
-        hero_transforms.push_back(hero.get_transform_matrix());
+        glm::vec3 diff = heroes[i].get_position() - cam_pos;
+        sorted_indices[i] = { i, glm::dot(diff, diff) };
     }
 
-    staff_transforms.clear();
-    staff_transforms.reserve(staves.size());
-    for (const auto& staff : staves)
+    // Sorteer: dichtbij de camera eerst (<), zodat we maximaal profiteren van Early-Z
+    std::sort(sorted_indices.begin(), sorted_indices.end(), [](const DistanceEntry& a, const DistanceEntry& b)
     {
-        staff_transforms.push_back(staff.get_transform_matrix());
+        return a.distance_sq < b.distance_sq;
+    });
+
+    // 2. Haal de matrices parallel op, maar nu in de GESORTEERDE volgorde!
+    pool.parallel_for(hero_count, [&](size_t i)
+        {
+            size_t sorted_hero_idx = sorted_indices[i].original_index;
+            hero_transforms[i] = heroes[sorted_hero_idx].get_transform_matrix();
+        });
+    // ----------------------------------------------
+    
+    // Staff transforms (staven mogen gewoon parallel, die zijn niet zo zwaar)
+    pool.parallel_for(staff_count, [&](size_t i)
+        {
+            staff_transforms[i] =
+                staves[i].get_transform_matrix();
+        });
+
+    if (!hero_transforms.empty())
+    {
+        renderer->draw_batch(
+            "frieren-blob",
+            "frieren-blob",
+            hero_transforms);
     }
 
-
-    // Verzend de transformaties in batches
-    if (!hero_transforms.empty()) {
-        renderer->draw_instanced("frieren-blob", "frieren-blob", hero_transforms);
+    if (!staff_transforms.empty())
+    {
+        renderer->draw_batch(
+            "staff",
+            "staff",
+            staff_transforms);
     }
-
-    if (!staff_transforms.empty()) {
-        renderer->draw_instanced("staff", "staff", staff_transforms);
-    }
-
+    
     terrain.draw(renderer);
 
     for (const auto& lightning : active_lightning)
@@ -529,11 +516,14 @@ void Scene::draw()
     {
         show_health_values();
         show_mana_values();
+
         Log::get_instance()->draw("Log");
+
         show_controls();
     }
 }
-
+    
+    
 /// <summary>
 /// Sorts all health values and displays them in a window.
 /// </summary>

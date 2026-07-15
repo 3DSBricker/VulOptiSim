@@ -41,7 +41,6 @@ Global
 		{6C6D2472-0E26-4C40-9DF6-42D65A13030A}.Release_Test|x64.ActiveCfg = Release|x64
 		{6C6D2472-0E26-4C40-9DF6-42D65A13030A}.Release_Test|x64.Build.0 = Release|x64
 		{6C6D2472-0E26-4C40-9DF6-42D65A13030A}.Release|x64.ActiveCfg = Release|x64
-		{6C6D2472-0E26-4C40-9DF6-42D65A13030A}.Release|x64.Build.0 = Release|x64
 		{6C6D2472-0E26-4C40-9DF6-42D65A13030A}.Release|x86.ActiveCfg = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution

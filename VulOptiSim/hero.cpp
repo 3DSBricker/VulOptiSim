@@ -5,7 +5,66 @@ Hero::Hero(const std::string& model, const std::string& texture, const Transform
     : model(model), texture(texture), transform(transform), speed(speed)
 {
 }
+/*
+void Hero::update(const float delta_time, const Terrain& terrain)
+{
+    // 1. Snelle exit: geen branching als het niet nodig is
+    if (!active) return;
 
+    // 2. Directe toegang: vermijd get-methodes
+    float distance = delta_time * speed;
+    glm::vec2 pos = transform.position; // Directe struct toegang
+
+    // Displace position
+    pos += force;
+    force = glm::vec2{ 0.f, 0.f };
+
+    // 3. Geoptimaliseerde Route traversal
+    // We checken eerst of de route leeg is om de 'while' loop volledig over te slaan
+    if (!route.empty())
+    {
+        while (!route.empty() && distance > 0.f)
+        {
+            glm::vec2 target = route.back();
+            glm::vec2 dir = target - pos;
+            float dist_sq = glm::length2(dir);
+            float dist_to_target = std::sqrt(dist_sq);
+
+            if (dist_to_target > distance)
+            {
+                pos += (distance / dist_to_target) * dir;
+                distance = 0.f;
+            }
+            else
+            {
+                pos = target;
+                distance -= dist_to_target;
+                route.pop_back(); // Verwijder bereikt punt
+            }
+            
+            // Face target - als dit duur is, doe dit alleen als distance > 0
+            face_target(dir);
+        }
+    }
+
+    // 4. Terrain & Bounds - direct toewijzen met behoud van Z
+    if (terrain.in_bounds(pos))
+    {
+        transform.position = glm::vec3(pos.x, pos.y, transform.position.z);
+        transform.position.z = terrain.get_height(pos); // Hoogte snel updaten
+    }
+    else
+    {
+        // De functie past 'pos' direct aan, dus geen '=' nodig
+        terrain.clamp_to_bounds(pos); 
+        
+        // Nu kun je de aangepaste 'pos' gebruiken
+        transform.position = glm::vec3(pos.x, pos.y, transform.position.z);
+        transform.position.z = terrain.get_height(pos);
+    }
+}
+
+*/
 void Hero::update(const float delta_time, const Terrain& terrain)
 {
     if (!active)
@@ -64,9 +123,10 @@ void Hero::update(const float delta_time, const Terrain& terrain)
         transform.set_position2d(position);
     }
 
-    transform.set_height(terrain.get_height(position));
+    transform.set_height(terrain.get_height_fast(position));
 }
 
+    
 void Hero::set_route(const std::vector<glm::vec2>& new_route)
 {
     route = new_route;

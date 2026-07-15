@@ -43,15 +43,12 @@ void Lightning::register_draw(Sprite_Manager<Lightning>& sprite_manager) const
 
 void Lightning::check_hits(std::vector<Hero>& heroes) const
 {
-    if (active)
+    for(auto& hero : heroes)
     {
-        for (auto& hero : heroes)
+        if(hero.is_active() &&
+           hero.collision(collision_box_min, collision_box_max))
         {
-            if (hero.is_active() && hero.collision(collision_box_min, collision_box_max))
-            {
-                Log::get_instance()->add_log("%s is hit by lightning!\n", hero.get_name());
-                hero.take_damage(damage_per_frame);
-            }
+            hero.take_damage(damage_per_frame);
         }
     }
 }

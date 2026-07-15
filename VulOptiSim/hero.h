@@ -41,6 +41,11 @@ public:
     glm::mat4 get_transform_matrix() const {
         return transform.get_matrix(); // Return de matrix vanuit de transform
     }
+    glm::vec2 previous_position{};
+    const glm::vec2& get_previous_position() const
+    {
+        return previous_position;
+    }
 
 
 private:

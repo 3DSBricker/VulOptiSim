@@ -25,7 +25,20 @@ public:
     void initialize(vulvox::Renderer* renderer);
 
     void draw(vulvox::Renderer* renderer) const;
+    
+    // Zorg dat de definitie HIER in de header staat:
+    inline float get_height_fast(const glm::vec2& pos) const 
+    {
+        // Terug naar je originele deling (die werkt!), maar we gebruiken [] in plaats van .at()
+        // Dit verwijdert de 'bounds-check' overhead, wat de winst oplevert.
+        int x = static_cast<int>(pos.x / tile_width);
+        int y = static_cast<int>(pos.y / tile_length);
 
+        // [] is de snelle variant zonder bounds-check
+        // We casten hier niet naar float omdat terrain_heights een vector van floats is.
+        return terrain_heights[get_tile_index(x, y)];
+    }
+    
     float get_height(const glm::vec2& position2d) const;
 
     std::vector<glm::vec2> find_route(const glm::vec2& start_position, const glm::vec2& target_position) const;
@@ -41,7 +54,10 @@ public:
     float tile_width = 6.f;
     float tile_length = 6.f;
     float tile_height = 6.f;
-
+    
+    float inv_tile_width = 1.0f / tile_width;
+    float inv_tile_length = 1.0f / tile_length;
+    
     float terrain_width = 0.f;
     float terrain_length = 0.f;
 
@@ -56,7 +72,11 @@ private:
     std::vector<glm::vec2> reconstruct_path(const std::unordered_map<glm::ivec2, glm::ivec2>& parents, const glm::ivec2& start_position, const glm::ivec2& target_position) const;
     std::vector<glm::ivec2> get_neighbours(const glm::ivec2& node) const;
     bool is_accessible(const glm::ivec2& tile, const glm::ivec2& from) const;
+    bool is_initialized = false;
 
+    // Sla hier de unieke GPU handle op
+    uint32_t terrain_gpu_handle = 0;
+    
     // Struct voor A* knopen (met g-cost, h-cost en f-cost)
     struct Node {
         glm::ivec2 position;

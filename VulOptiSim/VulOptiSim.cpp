@@ -120,10 +120,15 @@ int main()
     {
         auto total_start = std::chrono::high_resolution_clock::now();
         vulvox::Renderer renderer;
-
         auto start_time = std::chrono::high_resolution_clock::now();
 
-        renderer.init(width, height, glm::radians(45.0f), 0.1f, 1000.0f);
+        vulvox::Renderer_Configuration renderer_configuration;
+
+        // The current cube asset and shield planes rely on both sides being
+        // visible. Enable culling only after their winding/order is corrected.
+        renderer_configuration.enable_back_face_culling = false;
+
+        renderer.init(width, height, glm::radians(45.0f), 0.1f, 1000.0f, renderer_configuration);
         renderer.init_imgui();
 
         renderer.set_dark_theme();
@@ -163,12 +168,18 @@ int main()
             if (!lock_update)
             {
                 //Fixed timestep
+                // auto draw_start = std::chrono::high_resolution_clock::now();
                 scene.update(1.f / 60.f);
+                // std::this_thread::sleep_for(std::chrono::seconds(5));
+                // auto draw_end = std::chrono::high_resolution_clock::now();
+                // float draw_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(draw_end - draw_start).count();
+                // std::cout << "Update took: " << draw_duration << " ms" << std::endl;
             }
 
             //Only call draw and imgui functions in between start and end draw
             renderer.start_draw();
             scene.draw();
+            // std::this_thread::sleep_for(std::chrono::seconds(5));
             measure_performance(renderer, scene, delta_time, frames, current_frame, lock_update, start_time);
             renderer.end_draw();
 

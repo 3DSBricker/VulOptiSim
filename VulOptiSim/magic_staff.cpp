@@ -14,19 +14,36 @@ void Magic_Staff::update(
 )
 {
     current_lightning_cooldown += delta_time;
+    current_shoot_cooldown += delta_time;
 
-    if (current_lightning_cooldown >= lightning_cooldown)
+
+    // Target maar af en toe zoeken
+    target_check_timer -= delta_time;
+
+    if(target_check_timer <= 0.0f)
+    {
+        target_check_timer = target_check_interval;
+
+        if(current_target == nullptr ||
+           !current_target->is_active())
+        {
+            current_target = find_closest_target(heroes);
+        }
+    }
+
+
+    if(current_lightning_cooldown >= lightning_cooldown)
     {
         current_lightning_cooldown -= lightning_cooldown;
         spawn_lightning(active_lightning);
     }
 
-    current_shoot_cooldown += delta_time;
 
-    if (current_shoot_cooldown >= shoot_cooldown)
+    if(current_shoot_cooldown >= shoot_cooldown)
     {
         current_shoot_cooldown -= shoot_cooldown;
-        spawn_projectile(active_projectiles, heroes);
+
+        spawn_projectile(active_projectiles);
     }
 }
 
@@ -55,14 +72,20 @@ void Magic_Staff::spawn_lightning(std::vector<Lightning>& active_lightning) cons
     Log::get_instance()->add_log("%s casts lightning storm!\n", name);
 }
 
-void Magic_Staff::spawn_projectile(std::vector<Projectile>& active_projectiles, std::vector<Hero>& heroes) const
+void Magic_Staff::spawn_projectile(std::vector<Projectile>& active_projectiles)
 {
-    Hero* closest_target = find_closest_target(heroes);
-
-    if (closest_target)
+    if(current_target)
     {
-        active_projectiles.emplace_back(transform.position, closest_target);
-        Log::get_instance()->add_log("%s shoots a missile at %s.\n", name, closest_target->get_name());
+        active_projectiles.emplace_back(
+            transform.position,
+            current_target
+        );
+
+        Log::get_instance()->add_log(
+            "%s shoots a missile at %s.\n",
+            name,
+            current_target->get_name()
+        );
     }
 }
 

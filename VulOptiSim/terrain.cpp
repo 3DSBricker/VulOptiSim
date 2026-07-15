@@ -39,7 +39,7 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
                 glm::mat4& voxel_transform = terrain_transforms.emplace_back(1.0f);
                 voxel_transform = glm::translate(voxel_transform,
                     glm::vec3(x * tile_width + tile_width / 2,
-                        ((float)y + 0.5f) * tile_height, 
+                        (static_cast<float>(y) + 0.5f) * tile_height,
                         z * tile_length + tile_width / 2));
 
                 voxel_transform = glm::scale(voxel_transform, glm::vec3(tile_width, tile_height, tile_length));
@@ -85,7 +85,7 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
 
 }
 
-bool is_initialized = false;  // Bijhouden of terrein al geïnitialiseerd is
+bool is_initialized = false;  // Bijhouden of terrein al geÃ¯nitialiseerd is
 void Terrain::initialize(vulvox::Renderer* renderer)
 {
     if (!is_initialized) {
@@ -95,7 +95,17 @@ void Terrain::initialize(vulvox::Renderer* renderer)
         // terrain_transforms = ...  // Bijvoorbeeld ergens anders in je code geladen
         // texture_indices = ...     // Evenzo, al gedefinieerd en geladen
 
-        is_initialized = true;  // Markeer als geïnitieerd
+        is_initialized = true;  // Markeer als geÃ¯nitieerd
+        
+        terrain_gpu_handle = renderer->register_static_instances(terrain_transforms, texture_indices);
+        is_initialized = true;
+
+        // 3. Ruim de CPU-data op! De GPU heeft nu zijn eigen kopie in VRAM, 
+        // dus we hebben deze megabytes aan RAM niet meer nodig op de CPU.
+        terrain_transforms.clear();
+        terrain_transforms.shrink_to_fit();
+        texture_indices.clear();
+        texture_indices.shrink_to_fit();
     }
 }
 
@@ -106,8 +116,8 @@ void Terrain::draw(vulvox::Renderer* renderer) const
         const_cast<Terrain*>(this)->initialize(renderer);  // Eenmalige initialisatie
     }
 
-    // Render het terrein
-    renderer->draw_instanced_with_texture_array("cube", "texture_array_test", terrain_transforms, texture_indices);
+    // Render het terrein vliegensvlug via de handle!
+    renderer->draw_static_instanced("cube", "texture_array_test", terrain_gpu_handle);
 }
 
 float Terrain::get_height(const glm::vec2& position2d) const

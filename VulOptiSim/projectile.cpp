@@ -8,56 +8,77 @@ Projectile::Projectile()
 Projectile::Projectile(glm::vec3 spawn_position, Hero* target) : target(target), transform(spawn_position), animation_timer("fireball", 0, 33, 0.1f)
 {
     transform.scale = glm::vec3(10.f);
-    direction = glm::normalize(target->get_position() - spawn_position);
-}
-
-void Projectile::update(const float delta_time, const Camera& camera, const Shield& shield, std::vector<Hero>& heroes)
-{
-    if (active)
+    if(target)
     {
-        uptime += delta_time;
+        direction = glm::normalize(
+            target->get_position() - spawn_position
+        );
+    }}
 
-        if (uptime >= lifetime)
-        {
-            active = false;
-            return;
-        }
+void Projectile::update(
+    const float delta_time,
+    const Camera& camera,
+    const Shield& shield,
+    std::vector<Hero>& heroes)
+{
+    if(!active)
+        return;
 
-        if (target)
-        {
-            direction = glm::normalize(target->get_position() - transform.position);
-        }
 
-        transform.position += direction * speed * delta_time;
+    uptime += delta_time;
 
-        rotate_to_camera(camera);
-
-        animation_timer.update(delta_time);
-
-        //Disable if the projectile collides with the shield
-        if (shield.intersects(transform.get_position2d(), radius))
-        {
-            Log::get_instance()->add_log("The projectile hits the shield, draining mana.\n");
-
-            shield.absorb(heroes, transform.get_position2d());
-            active = false;
-        }
-
-        check_collisions(heroes);
+    if(uptime >= lifetime)
+    {
+        active=false;
+        return;
     }
+
+
+    transform.position += direction * speed * delta_time;
+
+
+    rotate_to_camera(camera);
+
+    animation_timer.update(delta_time);
+
+
+    if(shield.intersects(
+        transform.get_position2d(),
+        radius))
+    {
+        shield.absorb(
+            heroes,
+            transform.get_position2d()
+        );
+
+        active=false;
+        return;
+    }
+
+
+    check_collisions(heroes);
 }
 
 void Projectile::check_collisions(std::vector<Hero>& heroes)
 {
-    for (const auto& hero : heroes)
+    for(auto& hero : heroes)
     {
-        if (hero.collision(transform.position, radius))
+        if(!hero.is_active())
+            continue;
+
+        const glm::vec3& hp = hero.get_position();
+        const float r = radius + hero.get_collision_radius();
+
+        if(std::abs(hp.x - transform.position.x) > r ||
+           std::abs(hp.z - transform.position.z) > r)
         {
-            Log::get_instance()->add_log("The projectile explodes near %s.\n", hero.get_name());
+            continue;
+        }
 
+        if(hero.collision(transform.position, radius))
+        {
             explode(heroes);
-
-            break; //Projectile exploded, exit
+            return;
         }
     }
 }
