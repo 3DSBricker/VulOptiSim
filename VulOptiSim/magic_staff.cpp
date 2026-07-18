@@ -6,44 +6,35 @@ Magic_Staff::Magic_Staff(const glm::vec3& position, const Terrain* terrain) : na
     transform.scale = glm::vec3(0.5f);
 }
 
-void Magic_Staff::update(
-    const float delta_time,
-    std::vector<Hero>& heroes,
-    std::vector<Lightning>& active_lightning,
-    std::vector<Projectile>& active_projectiles
-)
+void Magic_Staff::update(const float delta_time, HeroSystem& hero_system, std::vector<Lightning>& active_lightning, std::vector<Projectile>& active_projectiles)
 {
     current_lightning_cooldown += delta_time;
     current_shoot_cooldown += delta_time;
 
-
-    // Target maar af en toe zoeken
     target_check_timer -= delta_time;
 
-    if(target_check_timer <= 0.0f)
+    if (target_check_timer <= 0.0f)
     {
         target_check_timer = target_check_interval;
 
-        if(current_target == nullptr ||
-           !current_target->is_active())
+        // Bepaal of de huidige index nog geldig/actief is.
+        // Zo niet, zoek een nieuwe.
+        if (!has_target || current_target_index >= hero_system.size() || !hero_system.active[current_target_index])
         {
-            current_target = find_closest_target(heroes);
+            find_closest_target(hero_system);
         }
     }
 
-
-    if(current_lightning_cooldown >= lightning_cooldown)
+    if (current_lightning_cooldown >= lightning_cooldown)
     {
         current_lightning_cooldown -= lightning_cooldown;
         spawn_lightning(active_lightning);
     }
 
-
-    if(current_shoot_cooldown >= shoot_cooldown)
+    if (current_shoot_cooldown >= shoot_cooldown)
     {
         current_shoot_cooldown -= shoot_cooldown;
-
-        spawn_projectile(active_projectiles);
+        spawn_projectile(hero_system, active_projectiles);
     }
 }
 
@@ -72,44 +63,43 @@ void Magic_Staff::spawn_lightning(std::vector<Lightning>& active_lightning) cons
     Log::get_instance()->add_log("%s casts lightning storm!\n", name);
 }
 
-void Magic_Staff::spawn_projectile(std::vector<Projectile>& active_projectiles)
+void Magic_Staff::spawn_projectile(HeroSystem& hero_system, std::vector<Projectile>& active_projectiles)
 {
-    if(current_target)
+    if (has_target && current_target_index < hero_system.size())
     {
+        // Gebruik de positie uit de HeroSystem array
+        glm::vec3 target_pos = hero_system.position[current_target_index];
+
         active_projectiles.emplace_back(
             transform.position,
-            current_target
+            target_pos // <-- Geef hier de vec3 positie mee
         );
 
         Log::get_instance()->add_log(
-            "%s shoots a missile at %s.\n",
-            name,
-            current_target->get_name()
+            "%s shoots a missile at target index %zu.\n",
+            name.c_str(),
+            current_target_index
         );
     }
 }
 
-Hero* Magic_Staff::find_closest_target(std::vector<Hero>& heroes) const
+void Magic_Staff::find_closest_target(const HeroSystem& hero_system)
 {
-    Hero* closest_hero = nullptr;
-
+    has_target = false;
     float closest_distance_squared = std::numeric_limits<float>::max();
 
-    for (auto& hero : heroes)
+    for (size_t i = 0; i < hero_system.size(); i++)
     {
-        if (!hero.is_active())
-        {
-            continue;
-        }
+        if (!hero_system.active[i]) continue;
 
-        float distance_squared = glm::length2(hero.get_position2d() - transform.get_position2d()); // Use squared distance to avoid sqrt
+        glm::vec2 pos2d(hero_system.position[i].x, hero_system.position[i].z);
+        float distance_squared = glm::length2(pos2d - transform.get_position2d());
 
         if (distance_squared < closest_distance_squared)
         {
             closest_distance_squared = distance_squared;
-            closest_hero = &hero;
+            current_target_index = i;
+            has_target = true;
         }
     }
-
-    return closest_hero;
 }

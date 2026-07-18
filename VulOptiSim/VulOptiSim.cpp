@@ -137,7 +137,7 @@ int main()
 
         //Scene scene(renderer);
         auto scene_start = std::chrono::high_resolution_clock::now();
-        Scene scene(renderer);
+        Scene scene(&renderer);
         auto scene_end = std::chrono::high_resolution_clock::now();
 
         float scene_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(scene_end - scene_start).count();
@@ -178,9 +178,14 @@ int main()
 
             //Only call draw and imgui functions in between start and end draw
             renderer.start_draw();
+            
+            // renderer.start_draw();
             scene.draw();
+            
             // std::this_thread::sleep_for(std::chrono::seconds(5));
+            
             measure_performance(renderer, scene, delta_time, frames, current_frame, lock_update, start_time);
+            
             renderer.end_draw();
 
             current_frame++;

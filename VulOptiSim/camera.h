@@ -7,6 +7,13 @@ public:
     Camera(glm::vec3 position, glm::vec3 up, glm::vec3 direction, float movement_speed, float rotation_speed);
 
     glm::mat4 get_view_matrix()  const;
+    
+    float fov = 45.0f;
+    float aspect_ratio = 16.0f / 9.0f; // Pas aan naar jouw resolutie
+    float near_plane = 0.1f;
+    float far_plane = 1000.0f;
+
+    glm::mat4 get_projection_matrix() const;
 
     glm::vec3 get_position() const;
     void set_position(const glm::vec3& new_position);

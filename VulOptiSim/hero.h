@@ -27,8 +27,8 @@ public:
     /// </summary>
     bool collision(const glm::vec2& min, const glm::vec2 max) const;
 
-    glm::vec3 get_position() const;
-    glm::vec2 get_position2d() const;
+    const glm::vec3& get_position() const;
+    const glm::vec2& get_position2d() const;
 
     float get_collision_radius() const;
 
@@ -38,7 +38,7 @@ public:
     bool is_active() const { return active; };
     std::string get_name() const { return name; };
 
-    glm::mat4 get_transform_matrix() const {
+    const glm::mat4& get_transform_matrix() const {
         return transform.get_matrix(); // Return de matrix vanuit de transform
     }
     glm::vec2 previous_position{};

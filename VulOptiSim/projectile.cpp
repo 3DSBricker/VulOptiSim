@@ -5,25 +5,28 @@ Projectile::Projectile()
 {
 }
 
-Projectile::Projectile(glm::vec3 spawn_position, Hero* target) : target(target), transform(spawn_position), animation_timer("fireball", 0, 33, 0.1f)
+Projectile::Projectile(glm::vec3 spawn_position, glm::vec3 target_position) 
+    : transform(spawn_position), animation_timer("fireball", 0, 33, 0.1f)
 {
     transform.scale = glm::vec3(10.f);
-    if(target)
-    {
-        direction = glm::normalize(
-            target->get_position() - spawn_position
-        );
-    }}
+    
+    // Voorkom division by zero als target exact op spawn staat
+    glm::vec3 diff = target_position - spawn_position;
+    if(glm::length(diff) > 0.0001f) {
+        direction = glm::normalize(diff);
+    } else {
+        direction = glm::vec3(1.f, 0.f, 0.f);
+    }
+}
 
 void Projectile::update(
     const float delta_time,
     const Camera& camera,
     const Shield& shield,
-    std::vector<Hero>& heroes)
+    HeroSystem& heroes) // <-- Aangepast
 {
     if(!active)
         return;
-
 
     uptime += delta_time;
 
@@ -33,49 +36,44 @@ void Projectile::update(
         return;
     }
 
-
     transform.position += direction * speed * delta_time;
-
 
     rotate_to_camera(camera);
 
     animation_timer.update(delta_time);
 
-
-    if(shield.intersects(
-        transform.get_position2d(),
-        radius))
+    if(shield.intersects(transform.get_position2d(), radius))
     {
-        shield.absorb(
-            heroes,
-            transform.get_position2d()
-        );
-
+        shield.absorb(heroes, transform.get_position2d());
         active=false;
         return;
     }
 
-
     check_collisions(heroes);
 }
 
-void Projectile::check_collisions(std::vector<Hero>& heroes)
+void Projectile::check_collisions(HeroSystem& heroes)
 {
-    for(auto& hero : heroes)
+    // Door alle actieve heroes itereren
+    for(size_t i = 0; i < heroes.size(); i++)
     {
-        if(!hero.is_active())
+        if(!heroes.active[i])
             continue;
 
-        const glm::vec3& hp = hero.get_position();
-        const float r = radius + hero.get_collision_radius();
+        const glm::vec3& hp = heroes.position[i];
+        const float r = radius + heroes.collision_radius[i];
 
+        // 1. Snelle AABB check (Bounding Box)
         if(std::abs(hp.x - transform.position.x) > r ||
            std::abs(hp.z - transform.position.z) > r)
         {
             continue;
         }
 
-        if(hero.collision(transform.position, radius))
+        // 2. Precieze cirkel collision check (squared distance)
+        float dx = hp.x - transform.position.x;
+        float dz = hp.z - transform.position.z;
+        if((dx * dx + dz * dz) <= (r * r))
         {
             explode(heroes);
             return;
@@ -83,17 +81,27 @@ void Projectile::check_collisions(std::vector<Hero>& heroes)
     }
 }
 
-void Projectile::explode(std::vector<Hero>& heroes)
+void Projectile::explode(HeroSystem& heroes)
 {
-    for (auto& hero : heroes)
+    for (size_t i = 0; i < heroes.size(); i++)
     {
-        if (hero.collision(transform.position, explosion_radius))
+        if (!heroes.active[i]) continue;
+
+        float r = explosion_radius + heroes.collision_radius[i];
+        float dx = heroes.position[i].x - transform.position.x;
+        float dz = heroes.position[i].z - transform.position.z;
+
+        // Als ze in de explosion radius zijn:
+        if ((dx * dx + dz * dz) <= (r * r))
         {
-            hero.take_damage(damage);
+            // Ga ervan uit dat je dit in HeroSystem hebt, 
+            // of doe direct: heroes.health[i] -= damage;
+            heroes.take_damage(i, damage); 
         }
     }
 
     active = false;
+
     //TODO: Explode
 }
 
@@ -105,7 +113,7 @@ void Projectile::register_draw(Sprite_Manager<Projectile>& sprite_manager) const
     }
 }
 
-glm::mat4 Projectile::get_model_matrix() const
+const glm::mat4& Projectile::get_model_matrix() const
 {
     return transform.get_matrix();
 }

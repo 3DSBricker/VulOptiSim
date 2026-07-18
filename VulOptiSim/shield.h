@@ -1,4 +1,7 @@
 #pragma once
+#include "pch.h"
+
+class HeroSystem;
 
 class Shield
 {
@@ -6,14 +9,14 @@ public:
     Shield() = default;
     Shield(const std::string& texture_array_name);
 
-    void update(const std::vector<Hero>& heroes);
+    void update(const HeroSystem& hero_system);
 
     void draw(vulvox::Renderer* renderer) const;
 
     std::vector<glm::vec2> convex_hull(std::vector<glm::vec2> points) const;
 
     bool intersects(const glm::vec2& circle_center, float radius) const;
-    void absorb(std::vector<Hero>& heroes, glm::vec2 point) const;
+    void absorb(HeroSystem& hero_system, glm::vec2 point) const;
 
 private:
 

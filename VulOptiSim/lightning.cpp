@@ -13,7 +13,7 @@ Lightning::Lightning(glm::vec3 position) : animation_timer("lightning", 0, 10, 0
     collision_box_max = transform.get_position2d() + glm::vec2(plane_size.x / 2, plane_size.y / 2);
 }
 
-void Lightning::update(const float delta_time, const Camera& camera, std::vector<Hero> &heroes)
+void Lightning::update(const float delta_time, const Camera& camera, HeroSystem& hero_system)
 {
     if (active)
     {
@@ -28,8 +28,7 @@ void Lightning::update(const float delta_time, const Camera& camera, std::vector
         rotate_to_camera(camera);
         animation_timer.update(delta_time);
 
-        //Damage any heroes in range
-        check_hits(heroes);
+        check_hits(hero_system);
     }
 }
 
@@ -41,19 +40,30 @@ void Lightning::register_draw(Sprite_Manager<Lightning>& sprite_manager) const
     }
 }
 
-void Lightning::check_hits(std::vector<Hero>& heroes) const
+void Lightning::check_hits(HeroSystem& hero_system) const
 {
-    for(auto& hero : heroes)
+    for (size_t i = 0; i < hero_system.size(); i++)
     {
-        if(hero.is_active() &&
-           hero.collision(collision_box_min, collision_box_max))
+        if (hero_system.active[i])
         {
-            hero.take_damage(damage_per_frame);
+            // AABB vs Cirkel collision wiskunde:
+            // Klem het midden van de held vast aan de randen van de rechthoek.
+            glm::vec2 hero_pos(hero_system.position[i].x, hero_system.position[i].z);
+            glm::vec2 clamped = glm::clamp(hero_pos, collision_box_min, collision_box_max);
+            
+            // Controleer of de afstand van de dichtstbijzijnde rand tot de kern kleiner is dan de radius
+            float distance_squared = glm::length2(clamped - hero_pos);
+            float r = hero_system.collision_radius[i];
+
+            if (distance_squared < (r * r))
+            {
+                hero_system.take_damage(i, damage_per_frame);
+            }
         }
     }
 }
 
-glm::mat4 Lightning::get_model_matrix() const
+const glm::mat4& Lightning::get_model_matrix() const
 {
     return transform.get_matrix();
 }

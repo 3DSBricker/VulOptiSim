@@ -65,6 +65,27 @@ public:
     std::vector<float> terrain_heights;
     std::vector<glm::mat4> terrain_transforms;
     std::vector<uint32_t> texture_indices;
+    
+    struct Greedy_Tile
+    {
+        int x;
+        int z;
+        int width;
+        int length;
+
+        int height;
+        int texture;
+    };
+    
+    struct Tile_Data
+    {
+        uint32_t height;
+        uint32_t tile_type;
+        uint32_t alpha;
+    };
+    
+    std::vector<Greedy_Tile> generate_greedy_mesh(
+    const std::vector<Tile_Data>& map_data,int lowest);
 
 
 private:
@@ -73,6 +94,8 @@ private:
     std::vector<glm::ivec2> get_neighbours(const glm::ivec2& node) const;
     bool is_accessible(const glm::ivec2& tile, const glm::ivec2& from) const;
     bool is_initialized = false;
+    
+    std::vector<glm::vec4> terrain_uvs;
 
     // Sla hier de unieke GPU handle op
     uint32_t terrain_gpu_handle = 0;
@@ -88,15 +111,18 @@ private:
             return f_cost > other.f_cost;  // Prioriteitsqueue sorteert op f_cost
         }
     };
-
-    struct Tile_Data
+    
+    
+    struct Vertex
     {
-        uint32_t height;
-        uint32_t tile_type;
-        uint32_t alpha;
+        glm::vec3 position;
+        glm::vec3 normal;
+        glm::vec2 uv;
     };
 
-    std::vector<Tile_Data> read_map_file(const std::filesystem::path& path_to_height_map, int& map_width, int& map_length) const;
 
+
+    std::vector<Tile_Data> read_map_file(const std::filesystem::path& path_to_height_map, int& map_width, int& map_length) const;
+    
     int get_tile_index(const int x, const int y) const;
 };

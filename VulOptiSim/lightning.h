@@ -1,5 +1,7 @@
 #pragma once
 
+class HeroSystem;
+
 class Lightning
 {
 public:
@@ -7,12 +9,12 @@ public:
     Lightning();
     Lightning(glm::vec3 position);
 
-    void update(const float delta_time, const Camera& camera, std::vector<Hero>& heroes);
+    void update(const float delta_time, const Camera& camera, HeroSystem& hero_system);
 
     void register_draw(Sprite_Manager<Lightning>& sprite_manager) const;
 
 
-    glm::mat4 get_model_matrix() const;
+    const glm::mat4& get_model_matrix() const;
     glm::uint32_t get_texture_index() const;
 
     bool is_active() const { return active; };
@@ -23,7 +25,7 @@ private:
 
     void rotate_to_camera(const Camera& camera);
 
-    void check_hits(std::vector<Hero>& heroes) const;
+    void check_hits(HeroSystem& hero_system) const;
 
     Sprite_Animation animation_timer;
 

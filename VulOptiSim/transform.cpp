@@ -58,7 +58,7 @@ void Transform::set_direction2d(const glm::vec2& direction2d)
     //glm::quat rotation_quat = glm::rotation(start_vector, target_vector);
 }
 
-glm::mat4 Transform::get_matrix() const
+const glm::mat4& Transform::get_matrix() const
 {
     if(dirty)
     {

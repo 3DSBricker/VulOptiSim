@@ -24,6 +24,8 @@
 //Force depth range from 0.0 to 1.0 (Vulkan standard), instead of -1.0 to 1.0
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_ENABLE_EXPERIMENTAL
+#define GLM_FORCE_INTRINSICS
+#define GLM_FORCE_AVX2 // Als je CPU AVX2 ondersteunt
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/string_cast.hpp>
@@ -48,7 +50,8 @@
 #include "terrain.h"
 #include "sprite_animation.h"
 #include "sprite_manager.h"
-#include "hero.h"
+// #include "hero.h"
+#include "HeroSystem.h"
 #include "shield.h"
 #include "lightning.h"
 #include "projectile.h"
@@ -64,6 +67,9 @@ const std::filesystem::path KONATA_TEXTURE_PATH = "../textures/konata.png";
 const std::filesystem::path FRIEREN_BLOB_PATH = "../models/frieren_blob.obj";
 const std::filesystem::path FRIEREN_BLOB_TEXTURE_PATH = "../textures/frieren-blob-texture.png";
 const std::filesystem::path FRIEREN_PATH = "../models/Frieren.obj";
+const std::filesystem::path FRIEREN_PATH_LOD1 = "../models/Frieren_LOD1.obj";
+const std::filesystem::path FRIEREN_PATH_LOD2 = "../models/Frieren_LOD2.obj";
+const std::filesystem::path FRIEREN_PATH_LOD3 = "../models/Frieren_LOD3.obj";
 const std::filesystem::path FRIEREN_TEXTURE_PATH = "../textures/frieren_party.png";
 const std::filesystem::path SHIELD_TEXTURE_PATH = "../textures/shield.png";
 const std::filesystem::path LIGHTNING_TEXTURE_PATH = "../textures/lightning.png";

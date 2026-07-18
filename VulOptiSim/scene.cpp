@@ -4,9 +4,9 @@
 #include <execution>
 #include <algorithm> // Nodig voor std::for_each
 
-Scene::Scene(vulvox::Renderer& renderer) : renderer(&renderer),
+Scene::Scene(vulvox::Renderer* renderer) : renderer(renderer), terrain(std::make_unique<Terrain>(TERRAIN_PATH)),
 pool(std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()))),
-hero_grid(8.0f) // Kleinere cells = minder heroes per cell = snellere checks
+hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere checks
 {
     auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<std::future<void>> future;
@@ -19,7 +19,9 @@ hero_grid(8.0f) // Kleinere cells = minder heroes per cell = snellere checks
     camera = Camera(camera_pos, camera_up, camera_direction, 100.f, 100.f);
 
     auto terrain_start = std::chrono::high_resolution_clock::now();
-    terrain = Terrain(TERRAIN_PATH);
+    // terrain = Terrain(TERRAIN_PATH);
+    terrain->initialize(renderer);
+    std::cout << "Terrain ptr: " << terrain.get() << '\n';
     auto terrain_end = std::chrono::high_resolution_clock::now();
     float terrain_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(terrain_end - terrain_start).count();
 
@@ -91,12 +93,16 @@ void Scene::load_models_and_textures() const
     //renderer->load_texture("konata", KONATA_MODAL_TEXTURE_PATH);
 
     renderer->load_model("frieren-blob", FRIEREN_PATH);
+    renderer->load_model("frieren-lod1", FRIEREN_PATH_LOD1);
+    renderer->load_model("frieren-lod2", FRIEREN_PATH_LOD2);
+    renderer->load_model("frieren-lod3", FRIEREN_PATH_LOD3);
     renderer->load_texture("frieren-blob", FRIEREN_TEXTURE_PATH);
 
     renderer->load_model("staff", STAFF_PATH);
     renderer->load_texture("staff", STAFF_TEXTURE_PATH);
 
     renderer->load_model("cube", CUBE_MODEL_PATH);
+    // renderer->load_model("flat", FLAT_MODEL_PATH);
     //renderer->load_texture("cube", CUBE_SEA_TEXTURE_PATH); // onnodig want al in texutre_paths
 }
 
@@ -141,87 +147,78 @@ void Scene::spawn_heroes()
     //Transform hero_transform;
     //hero_transform.rotation = glm::quatLookAt(glm::vec3(0.f, 0.f, 1.f), glm::vec3(0.f, 1.f, 0.f));
     //hero_transform.scale = glm::vec3(1.f);
+    std::cout << "Terrain ptr: " << terrain.get() << '\n';
 
 
     int start_areas = 10;
     float start_area_tile_offset = 12.f;
-    float spawn_start_y = terrain.tile_width * 3.f;
+    float spawn_start_y = terrain->tile_width * 3.f;
 
-    float start_corner_y = 9.f * terrain.tile_width;
-    float spawn_offset = terrain.tile_width / 3.f;
-    float route_cache_resolution = terrain.tile_width * 6.f; // Verhoogd van 2 naar 6 voor minder unique routes
+    float start_corner_y = 9.f * terrain->tile_width;
+    float spawn_offset = terrain->tile_width / 3.f;
+    float route_cache_resolution = terrain->tile_width * 6.f; // Verhoogd van 2 naar 6 voor minder unique routes
 
     std::cout << "Spawning characters and calculating routes..." << std::endl;
 
     std::vector<std::future<void>> futures;
-    glm::uvec2 target = { 69 * terrain.tile_width, 160 * terrain.tile_width };
-
+    glm::uvec2 target = { 69 * terrain->tile_width, 160 * terrain->tile_width };
+    
     for (int s = 0; s < start_areas; s++)
     {
         futures.push_back(pool.enqueue([this, s, spawn_offset, start_corner_y, spawn_start_y, start_area_tile_offset, target, route_cache_resolution] {
-            std::vector<Hero> local_heroes;
-            local_heroes.reserve(900); // Voorkom reallocaties
-
-            float start_area_offset = s * start_area_tile_offset * terrain.tile_width;
+            HeroSystem local_heroes; // Maak SoA lokaal aan
+            
+            float start_area_offset = s * start_area_tile_offset * terrain->tile_width;
             float base_x = start_corner_y + start_area_offset;
 
-        for (int i = 0; i < 30; i++)
-        {
-            float x = base_x + (i * spawn_offset);
-            for (int j = 0; j < 30; j++)
-            {
-                float z = spawn_start_y + (j * spawn_offset);
-                float y = terrain.get_height(glm::vec2(x, z));
-                glm::vec2 start_pos = glm::vec2(x, z);
-                glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution);
-                
-                // Check globale cache eerst (thread-safe)
-                std::vector<glm::vec2> route;
-                {
-                    std::lock_guard<std::mutex> lock(route_cache_mutex);
-                    auto route_it = global_route_cache.find(grid_pos);
-                    if (route_it != global_route_cache.end()) {
-                        route = route_it->second;
-                    } else {
-                        route = terrain.find_route(start_pos, target);
-                        global_route_cache[grid_pos] = route;
+            for (int i = 0; i < 30; i++) {
+                float x = base_x + (i * spawn_offset);
+                for (int j = 0; j < 30; j++) {
+                    float z = spawn_start_y + (j * spawn_offset);
+                    float y = terrain->get_height(glm::vec2(x, z));
+                    glm::vec2 start_pos = glm::vec2(x, z);
+                    glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution);
+                    
+                    std::vector<glm::vec2> route;
+                    {
+                        std::lock_guard<std::mutex> lock(route_cache_mutex);
+                        auto route_it = global_route_cache.find(grid_pos);
+                        if (route_it != global_route_cache.end()) {
+                            route = route_it->second;
+                        } else {
+                            route = terrain->find_route(start_pos, target);
+                            global_route_cache[grid_pos] = route;
+                        }
                     }
-                }
 
-                // Maak hero en set route
-                local_heroes.emplace_back("frieren-blob", "frieren-blob", Transform(glm::vec3(x, y, z)), 20.f);
-                local_heroes.back().set_route(route);
+                    // Voeg toe aan lokale SoA: positie, speed=20.f, radius=0.5f, route
+                    local_heroes.add_hero(glm::vec3(x, y, z), 20.f, 0.5f, route); 
                 }
             }
 
-            // Voeg lokale lijst toe aan globale lijst, met mutex (vanwege thread safety)
+            // Merge de vectoren lock-protected
             std::lock_guard<std::mutex> lock(hero_mutex);
-            heroes.insert(heroes.end(), local_heroes.begin(), local_heroes.end());
-            }));
+            hero_system.merge(local_heroes); 
+        }));
     }
 
-    // Wacht tot alle taken klaar zijn
-    for (auto& f : futures) {
-        f.get();
-    }
+    // Wacht op alle tasks en vul grid
+    for (auto& f : futures) f.get();
 
-    for(size_t i=0;i<heroes.size();i++)
-    {
-        hero_grid.add_hero(
-            i,
-            heroes[i].get_position2d()
-        );
+    for(size_t i = 0; i < hero_system.size(); i++) {
+        hero_grid.add_hero(i, glm::vec2(hero_system.position[i].x, hero_system.position[i].z));
     }
     
    // Log::get_instance()->add_log("Spawned %d characters.\n", spawn_count);
 }
 void Scene::spawn_staves()
 {
-    glm::vec2 spawn_start{ terrain.tile_width * 15.f,  terrain.tile_length * 48.f };
-    float height = terrain.get_height(spawn_start) + 50.f;
-
-    float spawn_offset_x = 12.f * terrain.tile_height;
-    float spawn_offset_y = 40.f * terrain.tile_length;
+    glm::vec2 spawn_start{ terrain->tile_width * 15.f, terrain->tile_length * 48.f };
+    
+    float height = terrain->get_height(spawn_start) + 50.f;
+    
+    float spawn_offset_x = 12.f * terrain->tile_height;
+    float spawn_offset_y = 40.f * terrain->tile_length;
 
     float spawn_count = 0;
     for (int i = 0; i < 10; i++)
@@ -230,7 +227,7 @@ void Scene::spawn_staves()
         {
             spawn_count++;
             glm::vec3 position{ spawn_start.x + i * spawn_offset_x, height, spawn_start.y + j * spawn_offset_y };
-            staves.emplace_back(position, &terrain);
+            staves.emplace_back(position, terrain.get());
         }
     }
 
@@ -239,7 +236,7 @@ void Scene::spawn_staves()
 
 size_t Scene::get_character_count() const
 {
-    return heroes.size();
+    return hero_system.size();
 }
 
 size_t Scene::get_staff_count() const
@@ -251,100 +248,79 @@ size_t Scene::get_staff_count() const
 /**
  * Controleert botsingen tussen actieve helden en duwt ze uit elkaar indien nodig.
  */
-
 void Scene::check_collisions()
 {
-    // 2. Buffers voorbereiden (Alleen resize als aantal helden verandert!)
-    const size_t num_workers = 4; // Of std::thread::hardware_concurrency()
-    if (collision_force_buffers.size() != num_workers || collision_force_buffers[0].size() != heroes.size())
-    {
-        collision_force_buffers.resize(num_workers, std::vector<glm::vec2>(heroes.size()));
+    const size_t num_workers = pool.thread_count();
+    
+    if (collision_force_buffers.size() != num_workers || collision_force_buffers[0].size() != hero_system.size()) {
+        collision_force_buffers.resize(num_workers, std::vector<glm::vec2>(hero_system.size(), glm::vec2{0.f}));
     }
 
-    // 3. Parallelle berekening (Zonder std::future / pool overhead)
-    // We gebruiken een index-bereik om de parallelle uitvoering te sturen
-    std::vector<size_t> worker_indices(num_workers);
-    std::iota(worker_indices.begin(), worker_indices.end(), 0);
+    for (auto& buffer : collision_force_buffers) {
+        std::fill(buffer.begin(), buffer.end(), glm::vec2{0.f});
+    }
 
-    std::for_each(std::execution::par, worker_indices.begin(), worker_indices.end(), [this, num_workers](size_t worker_id) {
+    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+        if (!hero_system.active[i]) return;
+
+        auto& forces = collision_force_buffers[chunk_id];
+        glm::vec2 pos_i(hero_system.position[i].x, hero_system.position[i].z);
+        int cell = hero_grid.get_cell_id(pos_i);
         
-        auto& forces = collision_force_buffers[worker_id];
-        // Reset alleen onze eigen buffer
-        std::fill(forces.begin(), forces.end(), glm::vec2{0.f});
-
-        // Bereken chunk voor deze worker
-        size_t chunk_size = (heroes.size() + num_workers - 1) / num_workers;
-        size_t start = worker_id * chunk_size;
-        size_t end = std::min(start + chunk_size, heroes.size());
-
-        for (size_t i = start; i < end; ++i) {
-            const auto& hero_i = heroes[i];
-            if (!hero_i.is_active()) continue;
-
-            const auto& nearby = hero_grid.get_nearby_heroes(hero_i.get_position2d());
-            for (int j : nearby) {
-                // Let op: we checken hier j (de buurman)
-                if (i >= (size_t)j || !heroes[j].is_active()) continue;
-
-                const auto& hero_j = heroes[j];
+        int j = hero_grid.head[cell]; // Start van de linked list
+        while (j != -1) {
+            if (i < (size_t)j && hero_system.active[j]) { 
+                const float radius_sum = hero_system.collision_radius[i] + hero_system.collision_radius[j];
+                glm::vec2 pos_j(hero_system.position[j].x, hero_system.position[j].z);
                 
-                // Squared distance check (sneller)
-                const float radius_sum = hero_i.get_collision_radius() + hero_j.get_collision_radius();
-                const glm::vec2 diff = hero_j.get_position2d() - hero_i.get_position2d();
+                const glm::vec2 diff = pos_j - pos_i;
                 const float dist_sq = glm::dot(diff, diff);
 
-                if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f)
-                {
+                if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f) {
                     const float dist = std::sqrt(dist_sq);
-
-                    const glm::vec2 force =
-                        glm::normalize(diff) * (radius_sum - dist);
+                    const glm::vec2 force = glm::normalize(diff) * (radius_sum - dist);
 
                     forces[i] -= force;
-                    forces[j] += force;
+                    forces[j] += force; 
                 }
             }
+            j = hero_grid.next[j]; // Naar de volgende hero in deze cell
         }
     });
 
-    // 4. Integratie (Accumuleren en toepassen)
-    // Dit deel is snel genoeg single-threaded in vergelijking met de collision-fase
-    for (size_t i = 0; i < heroes.size(); i++) {
+    for (size_t i = 0; i < hero_system.size(); i++) {
         glm::vec2 total_force{ 0.f };
         for (size_t w = 0; w < num_workers; w++) {
             total_force += collision_force_buffers[w][i];
         }
-
         if (glm::length2(total_force) > 0.f) {
-            heroes[i].apply_force(total_force);
+            hero_system.force[i] += total_force; // Direct toevoegen aan de SoA
         }
     }
 }
 
-#include <execution> // Voor parallelle uitvoering
 void Scene::update(const float delta_time)
 {
     const uint32_t phase = update_frame++ & 3u;
-    
     handle_input(delta_time);
     
-    // Camera volgen
-    if (follow_mode && !heroes.empty())
-    {
-        const auto it = std::ranges::max_element(heroes, [](const Hero& a, const Hero& b)
-            {
-                return a.get_position().z < b.get_position().z;
-            });
+    if (follow_mode && !hero_system.empty()) {
+        size_t max_idx = 0;
+        float max_z = std::numeric_limits<float>::lowest();
+        
+        for (size_t i = 0; i < hero_system.size(); ++i) {
+            if (hero_system.active[i] && hero_system.position[i].z > max_z) {
+                max_z = hero_system.position[i].z;
+                max_idx = i;
+            }
+        }
+        
         static float last_z = std::numeric_limits<float>::lowest();
-        const glm::vec3 hero_pos = it->get_position();
-        if (std::abs(hero_pos.z - last_z) > 0.001f)
-        {
+        const glm::vec3 hero_pos = hero_system.position[max_idx];
+        
+        if (std::abs(hero_pos.z - last_z) > 0.001f) {
             last_z = hero_pos.z;
-            const glm::vec3 camera_pos{
-                -28.0f,
-                305.5f,
-                hero_pos.z
-            };
+            const glm::vec3 camera_pos{ -28.0f, 305.5f, hero_pos.z };
             camera.set_position(camera_pos);
             camera.set_direction(hero_pos - camera_pos);
         }
@@ -352,173 +328,159 @@ void Scene::update(const float delta_time)
 
     renderer->set_view_matrix(camera.get_view_matrix());
 
-    // Heroes
-    pool.parallel_for(
-        heroes.size(),
-        [&](size_t i)
-        {
-            heroes[i].update(delta_time, terrain);
-        });
+    // Mass parallel update via SoA
+    pool.parallel_for(hero_system.size(), [&](size_t i) {
+        hero_system.update_hero(i, delta_time, *terrain);
+    });
     
-    // Collision + shield update slechts iedere 4 frames
-    if(phase == 0)
-    {
+    if (phase == 0) {
+        hero_grid.clear();
+        for (size_t i = 0; i < hero_system.size(); i++) {
+            if (hero_system.active[i]) {
+                hero_grid.add_hero((int)i, glm::vec2(hero_system.position[i].x, hero_system.position[i].z));
+            }
+        }
         check_collisions();
     }
     
     if(phase == 1)
     {
-        pool.parallel_for(projectiles.size(), [&](size_t i)
-        {
-            projectiles[i].update(
-                delta_time * 4.0f,
-                camera,
-                shield,
-                heroes);
-        });    }
+        pool.parallel_for(projectiles.size(), [&](size_t i) {
+            projectiles[i].update(delta_time * 4.0f, camera, shield, hero_system);
+        });    
+    }
 
     if(phase == 2)
     {
-        shield.update(heroes);
+        shield.update(hero_system);
     }
     
     if(phase == 3)
     {
-        for(auto& l : active_lightning)
-        {
-            l.update(
-                delta_time * 4.0f,
-                camera,
-                heroes);
+        for(auto& l : active_lightning) {
+            l.update(delta_time * 4.0f, camera, hero_system);
         }
-        
-        for(auto& staff : staves)
-        {
-            staff.update(
-                delta_time * 4.0f,
-                heroes,
-                active_lightning,
-                projectiles);
+        for(auto& staff : staves) {
+            staff.update(delta_time * 4.0f, hero_system, active_lightning, projectiles);
+        }
+    }
+    
+    // Fast SoA Cleanup: Verwijder inactieve heroes swap-with-back style
+    for (size_t i = 0; i < hero_system.size(); ) {
+        if (!hero_system.active[i]) {
+            hero_system.remove_hero(i);
+        } else {
+            ++i;
         }
     }
 
-    // Fast cleanup (volgorde niet behouden)
-    auto cleanup = [](auto& container)
-    {
+    // Fast cleanup
+    auto cleanup = [](auto& container) {
         size_t i = 0;
-
-        while (i < container.size())
-        {
-            if (!container[i].is_active())
-            {
+        while (i < container.size()) {
+            if (!container[i].is_active()) {
                 container[i] = std::move(container.back());
                 container.pop_back();
-            }
-            else
-            {
+            } else {
                 ++i;
             }
         }
     };
 
-    if(!projectiles.empty())
-        cleanup(projectiles);
-
-    if(!active_lightning.empty())
-        cleanup(active_lightning);
-    
-
+    if(!projectiles.empty()) cleanup(projectiles);
+    if(!active_lightning.empty()) cleanup(active_lightning);
 }
 
 void Scene::draw()
 {
-    const size_t hero_count  = heroes.size();
-    const size_t staff_count = staves.size();
-    
-    hero_transforms.resize(hero_count);
-    staff_transforms.resize(staff_count);
-
-    // --- OPTIMALISATIE 1: FRONT-TO-BACK SORTING ---
-    // 1. Maak een lijst met indices en hun afstand-kwadraat tot de camera
-    struct DistanceEntry {
-        size_t original_index;
-        float distance_sq;
-    };
-    
-    std::vector<DistanceEntry> sorted_indices(hero_count);
+    visible_hero_count = 0;
+    visible_staff_count = 0;
     const glm::vec3 cam_pos = camera.get_position();
+    
+    const size_t hero_count  = hero_system.size();
+    const size_t staff_count = staves.size();
+    const size_t num_workers = pool.thread_count();
+    
+    // Bereken exact hoeveel chunks de threadpool maximaal gaat maken
+    const size_t hero_chunk_size = (hero_count + num_workers - 1) / num_workers;
+    const size_t total_hero_chunks = hero_chunk_size > 0 ? (hero_count + hero_chunk_size - 1) / hero_chunk_size : 1;
 
-    // Snel de afstanden berekenen (dot product is sneller dan sqrt!)
-    for (size_t i = 0; i < hero_count; ++i)
-    {
-        glm::vec3 diff = heroes[i].get_position() - cam_pos;
-        sorted_indices[i] = { i, glm::dot(diff, diff) };
-    }
+    const size_t staff_chunk_size = (staff_count + num_workers - 1) / num_workers;
+    const size_t total_staff_chunks = staff_chunk_size > 0 ? (staff_count + staff_chunk_size - 1) / staff_chunk_size : 1;
 
-    // Sorteer: dichtbij de camera eerst (<), zodat we maximaal profiteren van Early-Z
-    std::sort(sorted_indices.begin(), sorted_indices.end(), [](const DistanceEntry& a, const DistanceEntry& b)
-    {
-        return a.distance_sq < b.distance_sq;
+    // Direct en gegarandeerd resizen naar de exacte chunk-grootte
+    lod0_chunks.resize(total_hero_chunks);
+    lod1_chunks.resize(total_hero_chunks);
+    lod2_chunks.resize(total_hero_chunks);
+    staff_chunks.resize(total_staff_chunks);
+
+    // Alle actieve buffers grondig cleanen
+    for (auto& c : lod0_chunks)  c.clear();
+    for (auto& c : lod1_chunks)  c.clear();
+    for (auto& c : lod2_chunks)  c.clear();
+    for (auto& c : staff_chunks) c.clear();
+
+    // Culling Heroes 
+    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+        glm::vec3 pos = hero_system.position[i];
+        float dx = pos.x - cam_pos.x, dy = pos.y - cam_pos.y, dz = pos.z - cam_pos.z;
+        float dist2 = dx * dx + dy * dy + dz * dz;
+
+        if (dist2 < LOD2_DIST2) {
+            glm::mat4 transform = hero_system.get_transform_matrix(i);
+            
+            if (dist2 < LOD0_DIST2)      lod0_chunks[chunk_id].push_back(transform);
+            else if (dist2 < LOD1_DIST2) lod1_chunks[chunk_id].push_back(transform);
+            else                         lod2_chunks[chunk_id].push_back(transform);
+        }
     });
 
-    // 2. Haal de matrices parallel op, maar nu in de GESORTEERDE volgorde!
-    pool.parallel_for(hero_count, [&](size_t i)
-        {
-            size_t sorted_hero_idx = sorted_indices[i].original_index;
-            hero_transforms[i] = heroes[sorted_hero_idx].get_transform_matrix();
-        });
-    // ----------------------------------------------
+    // Culling Staves
+    pool.parallel_for_chunked(staff_count, [&](size_t i, size_t chunk_id) {
+        glm::mat4 transform = staves[i].get_transform_matrix();
+        glm::vec3 pos = glm::vec3(transform[3]); 
+        glm::vec3 diff = pos - cam_pos;
+            
+        if (glm::dot(diff, diff) < MAX_DIST_SQ) {
+            visible_staff_count.fetch_add(1, std::memory_order_relaxed);
+            staff_chunks[chunk_id].push_back(transform); 
+        }
+    });
+
+    // Samenvoegen op de hoofdthread (NU 100% VEILIG, want alle workers zijn ECHT dood)
+    lod0.clear(); lod1.clear(); lod2.clear(); visible_staff_transforms.clear();
     
-    // Staff transforms (staven mogen gewoon parallel, die zijn niet zo zwaar)
-    pool.parallel_for(staff_count, [&](size_t i)
-        {
-            staff_transforms[i] =
-                staves[i].get_transform_matrix();
-        });
-
-    if (!hero_transforms.empty())
-    {
-        renderer->draw_batch(
-            "frieren-blob",
-            "frieren-blob",
-            hero_transforms);
+    for (size_t i = 0; i < total_hero_chunks; ++i) {
+        if (!lod0_chunks[i].empty()) lod0.insert(lod0.end(), lod0_chunks[i].begin(), lod0_chunks[i].end());
+        if (!lod1_chunks[i].empty()) lod1.insert(lod1.end(), lod1_chunks[i].begin(), lod1_chunks[i].end());
+        if (!lod2_chunks[i].empty()) lod2.insert(lod2.end(), lod2_chunks[i].begin(), lod2_chunks[i].end());
+    }
+    for (size_t i = 0; i < total_staff_chunks; ++i) {
+        if (!staff_chunks[i].empty()) visible_staff_transforms.insert(visible_staff_transforms.end(), staff_chunks[i].begin(), staff_chunks[i].end());
     }
 
-    if (!staff_transforms.empty())
-    {
-        renderer->draw_batch(
-            "staff",
-            "staff",
-            staff_transforms);
-    }
-    
-    terrain.draw(renderer);
-
-    for (const auto& lightning : active_lightning)
-    {
-        lightning.register_draw(lightning_sprite_manager);
-    }
-
+    // --- RENDER CALLS ---
+    if (!lod0.empty()) renderer->draw_batch("frieren-blob", "frieren-blob", lod0);
+    if (!lod1.empty()) renderer->draw_batch("frieren-lod1", "frieren-blob", lod1);
+    if (!lod2.empty()) renderer->draw_batch("frieren-lod2", "frieren-blob", lod2);
+    if (!visible_staff_transforms.empty()) renderer->draw_batch("staff", "staff", visible_staff_transforms);
+        
+    terrain->draw(renderer);
+        
+    for (const auto& lightning : active_lightning) { lightning.register_draw(lightning_sprite_manager); }
     lightning_sprite_manager.draw(renderer);
     lightning_sprite_manager.reset();
 
-    for (const auto& projectile : projectiles)
-    {
-        projectile.register_draw(projectile_sprite_manager);
-    }
-
+    for (const auto& projectile : projectiles) { projectile.register_draw(projectile_sprite_manager); }
     projectile_sprite_manager.draw(renderer);
     projectile_sprite_manager.reset();
 
     shield.draw(renderer);
 
-    if (show_debug_windows)
-    {
+    if (show_debug_windows) {
         show_health_values();
         show_mana_values();
-
         Log::get_instance()->draw("Log");
-
         show_controls();
     }
 }
@@ -530,28 +492,28 @@ void Scene::draw()
 void Scene::show_health_values() const
 {
     std::vector<int> health_values;
-    health_values.reserve(heroes.size()); // Vermijd herhaaldelijk realloceren
+    health_values.reserve(hero_system.size());
 
-    for (const auto& h : heroes)
-    {
-        health_values.push_back(h.get_health());
+    // Alleen de actieve health waarden opslaan
+    for (size_t i = 0; i < hero_system.size(); i++) {
+        if (hero_system.active[i]) {
+            health_values.push_back(hero_system.health[i]);
+        }
     }
 
     sort(health_values);
 
     ImGui::Begin("Heroes Health Bars");
-
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.90f);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.5f, 0.f, 1.0f }); //Green
-    for (const int& hp : health_values)
-    {
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.5f, 0.f, 1.0f }); 
+
+    for (const int& hp : health_values) {
         char hp_text[16];
         snprintf(hp_text, sizeof(hp_text), "%d/1000", hp);
         ImGui::ProgressBar((float)hp / 1000, ImVec2(-FLT_MIN, 0.0f), hp_text);
     }
+    
     ImGui::PopStyleColor(1);
-    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-
     ImGui::End();
 }
 
@@ -561,25 +523,28 @@ void Scene::show_health_values() const
 void Scene::show_mana_values() const
 {
     std::vector<int> mana_values;
-    mana_values.reserve(heroes.size()); // Vermijd herhaaldelijk realloceren
+    mana_values.reserve(hero_system.size()); 
 
-    for (const auto& s : heroes)
-    {
-        mana_values.push_back(s.get_mana());
+    // Alleen de actieve mana waarden opslaan
+    for (size_t i = 0; i < hero_system.size(); i++) {
+        if (hero_system.active[i]) {
+            mana_values.push_back(hero_system.mana[i]);
+        }
     }
 
     sort(mana_values);
 
     ImGui::Begin("Heroes Mana Bars");
-
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.90f);
-    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.f, 0.5f, 1.0f }); //Blue
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, { 0.f, 0.f, 0.5f, 1.0f }); 
+    
     for (const int& mana : mana_values)
     {
         char mana_text[16];
         snprintf(mana_text, sizeof(mana_text), "%d/1000", mana);
         ImGui::ProgressBar((float)mana / 1000, ImVec2(-FLT_MIN, 0.0f), mana_text);
     }
+    
     ImGui::PopStyleColor(1);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
 

@@ -90,20 +90,25 @@ void Hero::update(const float delta_time, const Terrain& terrain)
 
             //Move towards the current target node
             //Prevent overshooting by checking the remaining distance
-            if (distance_to_target - distance > 0.0001f)
+            if (distance_to_target > 0.00001f)
             {
-                position += distance * glm::normalize(target_direction);
-                distance = 0.f;
-            }
-            else
-            {
-                position = target;
-                distance -= distance_to_target;
-            }
+                glm::vec2 dir = target_direction / distance_to_target;
 
-            //Face target
-            face_target(target_direction);
+                if (distance_to_target > distance)
+                {
+                    position += distance * dir;
+                    distance = 0.f;
+                }
+                else
+                {
+                    position = target;
+                    distance -= distance_to_target;
+                }
 
+                //Face target
+                face_target(dir);
+            }
+            
             //If next node is (nearly) reached, set target to next node
             if (glm::length2(target - position) < terrain.tile_width)
             {
@@ -200,12 +205,12 @@ bool Hero::collision(const glm::vec2& min, const glm::vec2 max) const
     return aabb_circle_collision(min, max, position, collision_radius);
 }
 
-glm::vec3 Hero::get_position() const
+const glm::vec3& Hero::get_position() const
 {
     return transform.position;
 }
 
-glm::vec2 Hero::get_position2d() const
+const glm::vec2& Hero::get_position2d() const
 {
     return transform.get_position2d();
 }

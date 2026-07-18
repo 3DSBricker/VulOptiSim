@@ -21,7 +21,6 @@ layout(location = 1) out vec3 frag_texture_coordinate;
 void main() {
 
     //hardcoded positions and texcoords for a unit square (two triangles)
-    //the plane is centered around the origin so rotations will go smoothly around the middle without having to offset
     vec2 vertices[6] = vec2[]
     (
         vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5),
@@ -38,6 +37,7 @@ void main() {
 
     //compute position
     gl_Position = mvp.projection * mvp.view * mvp.model * instance_model_matrix * vec4(vertex, 0.0, 1.0);
+
 
     //compute texture coordinates
     //vec2 uv_min = vec2(0,0);

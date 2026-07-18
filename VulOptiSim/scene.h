@@ -8,8 +8,8 @@
 class Scene
 {
 public:
-    explicit Scene(vulvox::Renderer& renderer);
-
+    explicit Scene(vulvox::Renderer* renderer);
+    
     void check_collisions();
 
     void update(const float delta_time);
@@ -27,6 +27,12 @@ public:
 
     size_t get_character_count() const;
     size_t get_staff_count() const;
+    
+    const float MAX_DIST = 550.0f; // Pas aan naar wat je nodig hebt
+    const float MAX_DIST_SQ = MAX_DIST * MAX_DIST;
+    
+    alignas(64) std::atomic<uint32_t> visible_hero_count{0};
+    alignas(64) std::atomic<uint32_t> visible_staff_count{0};
 
 private:
 
@@ -49,11 +55,41 @@ private:
 
     glm::dvec2 prev_mouse_pos;
 
-    std::vector<Hero> heroes;
+    HeroSystem hero_system;
     std::vector<Magic_Staff> staves;
     std::vector<glm::mat4> hero_transforms;
     std::vector<glm::mat4> staff_transforms;
     std::vector<std::vector<glm::vec2>> collision_force_buffers;
+    
+    std::vector<glm::mat4> visible_staff_transforms;
+    
+    float LOD0_DIST2 = 100.0f * 100.0f;
+    float LOD1_DIST2 = 350.0f * 350.0f;
+    float LOD2_DIST2 = 600.0f * 600.0f;
+    
+    std::vector<std::vector<glm::mat4>> lod0_chunks;
+    std::vector<std::vector<glm::mat4>> lod1_chunks;
+    std::vector<std::vector<glm::mat4>> lod2_chunks;
+    std::vector<std::vector<glm::mat4>> staff_chunks;
+    // std::vector<std::vector<glm::mat4>> lod3_chunks;
+    
+    std::vector<glm::mat4> lod0;
+    std::vector<glm::mat4> lod1;
+    std::vector<glm::mat4> lod2;
+    // std::vector<glm::mat4> lod3;
+    
+    std::mutex lod0_mutex;
+    std::mutex lod1_mutex;
+    std::mutex lod2_mutex;
+    // std::mutex lod3_mutex;
+    
+    std::atomic<uint32_t> lod0_count{0};
+    std::atomic<uint32_t> lod1_count{0};
+    std::atomic<uint32_t> lod2_count{0};
+    // std::atomic<uint32_t> lod3_count{0};
+    std::atomic<uint32_t> staff_count_visible{0};
+    
+    const size_t worker_count = pool.thread_count();
 
     std::vector<Lightning> active_lightning;
     std::vector<Projectile> projectiles;
@@ -66,37 +102,43 @@ private:
     vulvox::Renderer* renderer;
     Camera camera;
 
-    Terrain terrain;
+    // Terrain terrain;
+    std::unique_ptr<Terrain> terrain;
 
     Shield shield;
-
+    
     struct Grid {
-        std::unordered_map<int, std::vector<int>> cells;
+        int width;
         float cell_size;
+        std::vector<int> head;
+        std::vector<int> next;
 
-        Grid(float size) : cell_size(size) {
-            cells.reserve(20000); // Pre-allocate voor 9000 heroes met cell_size=8
+        // Geef de max grootte van je map mee (bijv 10000.0f)
+        Grid(float max_world_size, float size) : cell_size(size) {
+            width = static_cast<int>(max_world_size / size) + 1;
+            head.assign(width * width, -1);
+            next.assign(20000, -1); // Ruimte voor max 20k heroes (pas aan indien nodig)
         }
 
-        int get_cell_id(const glm::vec2& pos) const {
-            int x = static_cast<int>(pos.x / cell_size);
-            int y = static_cast<int>(pos.y / cell_size);
-            return (x << 16) | y;
-        }
-
-        void add_hero(int hero_index, const glm::vec2& position) {
-            cells[get_cell_id(position)].push_back(hero_index);
-        }
-
-        const std::vector<int>& get_nearby_heroes(const glm::vec2& position) const {
-            static const std::vector<int> empty;
-            auto it = cells.find(get_cell_id(position));
-            if (it == cells.end()) return empty;
-            return it->second;
+        inline int get_cell_id(const glm::vec2& pos) const {
+            int x = static_cast<int>(std::max(0.0f, pos.x) / cell_size);
+            int y = static_cast<int>(std::max(0.0f, pos.y) / cell_size);
+            return x + (y * width);
         }
 
         void clear() { 
-            cells.clear(); // Snel: clears hele map O(1)
+            // O(N) maar extreem cache-vriendelijk en 0 allocaties!
+            std::fill(head.begin(), head.end(), -1); 
+        }
+
+        void add_hero(int hero_index, const glm::vec2& position) {
+            if (hero_index >= next.size()) next.resize(hero_index * 2, -1);
+            int cell = get_cell_id(position);
+            
+            if(cell < head.size()) {
+                next[hero_index] = head[cell];
+                head[cell] = hero_index;
+            }
         }
     };
 

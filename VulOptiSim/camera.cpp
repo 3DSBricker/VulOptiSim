@@ -13,6 +13,12 @@ glm::mat4 Camera::get_view_matrix() const
     return view_matrix;
 }
 
+glm::mat4 Camera::get_projection_matrix() const
+{
+    // GLM perspective gebruikt: FOV, Aspect Ratio, Near plane, Far plane
+    return glm::perspective(glm::radians(fov), aspect_ratio, near_plane, far_plane);
+}
+
 glm::vec3 Camera::get_position() const
 {
     return position;

@@ -4,6 +4,7 @@
 Terrain::Terrain(const std::filesystem::path& path_to_height_map)
 {
     std::vector<Tile_Data> map_data = read_map_file(path_to_height_map, map_width, map_length);
+    terrain_uvs.reserve(map_length * map_width);
 
     if (map_data.empty())
     {
@@ -23,47 +24,23 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
     {
         if (tile.height < lowest)
         {
-            lowest = tile.height;
+            lowest = std::min(lowest, static_cast<int>(tile.height));
         }
     }
-
+    
+    // gameplay heightmap bewaren
     for (int z = 0; z < map_length; z++)
     {
         for (int x = 0; x < map_width; x++)
         {
-            const Tile_Data& tile = map_data[(z * map_width) + x];
+            const auto& tile = map_data[z * map_width + x];
+
             int height = tile.height - lowest + 1;
 
-            for (int y = 0; y < height; y++)
-            {
-                glm::mat4& voxel_transform = terrain_transforms.emplace_back(1.0f);
-                voxel_transform = glm::translate(voxel_transform,
-                    glm::vec3(x * tile_width + tile_width / 2,
-                        (static_cast<float>(y) + 0.5f) * tile_height,
-                        z * tile_length + tile_width / 2));
-
-                voxel_transform = glm::scale(voxel_transform, glm::vec3(tile_width, tile_height, tile_length));
-
-                if (tile.tile_type & 1)
-                {
-                    texture_indices.push_back(0);
-                }
-                else if (tile.tile_type & 2)
-                {
-                    texture_indices.push_back(1);
-                }
-                else if (tile.tile_type & 4)
-                {
-                    texture_indices.push_back(2);
-                }
-                else
-                {
-                    texture_indices.push_back(3);
-                }
-            }
-
-            terrain_heights.emplace_back(height * tile_height);
-
+            terrain_heights.emplace_back(
+                height * tile_height
+            );
+            
             if (tile.tile_type & 1)
             {
                 tile_types.push_back(Terrain_Types::Sea);
@@ -82,43 +59,213 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
             }
         }
     }
+    
+    auto greedy_tiles = generate_greedy_mesh(map_data, lowest);
+    for(const auto& tile : greedy_tiles)
+    {
+        texture_indices.push_back(tile.texture); // Of tile.texture
+        glm::mat4 transform(1.0f);
+    
+        float w = tile.width * tile_width;
+        float l = tile.length * tile_length;
+        float h = tile.height * tile_height; // De totale hoogte in 3D-wereld eenheden
 
+        // 1. Verplaats de kubus
+        // Als het middelpunt van jouw kubus in het centrum ligt (0,0,0),
+        // dan moet de Y-positie op de helft van de totale hoogte zijn, zodat de bodem op 0 raakt.
+        transform = glm::translate(
+            transform,
+            glm::vec3(
+                tile.x * tile_width + w * 0.5f,
+                h * 0.5f, // Zet de kubus op de helft van zijn eigen hoogte
+                tile.z * tile_length + l * 0.5f
+            )
+        );
+
+        // 2. Schaal de kubus op alle 3 de assen
+        transform = glm::scale(
+            transform,
+            glm::vec3(w, h, l) // Rek hem uit op de Y-as in plaats van 1.0f!
+        );
+    
+        terrain_transforms.push_back(transform);
+        
+        terrain_uvs.emplace_back(
+            0.f,
+            0.f,
+            static_cast<float>(tile.width),
+            static_cast<float>(tile.length)
+);
+    }
+    
 }
 
 bool is_initialized = false;  // Bijhouden of terrein al geïnitialiseerd is
 void Terrain::initialize(vulvox::Renderer* renderer)
 {
-    if (!is_initialized) {
-        // Initialiseer het terrein eenmalig
-        // Hier kun je de bestaande data instellen (zoals terrain_transforms en texture_indices)
-        // Bijvoorbeeld als ze nog niet zijn geladen, stel ze dan in:
-        // terrain_transforms = ...  // Bijvoorbeeld ergens anders in je code geladen
-        // texture_indices = ...     // Evenzo, al gedefinieerd en geladen
-
-        is_initialized = true;  // Markeer als geïnitieerd
-        
-        terrain_gpu_handle = renderer->register_static_instances(terrain_transforms, texture_indices);
-        is_initialized = true;
-
-        // 3. Ruim de CPU-data op! De GPU heeft nu zijn eigen kopie in VRAM, 
-        // dus we hebben deze megabytes aan RAM niet meer nodig op de CPU.
-        terrain_transforms.clear();
-        terrain_transforms.shrink_to_fit();
-        texture_indices.clear();
-        texture_indices.shrink_to_fit();
-    }
+    std::cout << "TERRAIN INITIALIZE\n";
+    is_initialized = true;
+    terrain_gpu_handle = renderer->register_static_instances(terrain_transforms, texture_indices);
 }
+
+// void Terrain::draw(vulvox::Renderer* renderer) const
+// {
+//     renderer->draw_planes(
+//         "texture_array_test",
+//         terrain_transforms,
+//         texture_indices,
+//         terrain_uvs);
+// }
 
 void Terrain::draw(vulvox::Renderer* renderer) const
 {
-    // Eerst controleren of de initialisatie al gedaan is
-    if (!is_initialized) {
-        const_cast<Terrain*>(this)->initialize(renderer);  // Eenmalige initialisatie
-    }
-
-    // Render het terrein vliegensvlug via de handle!
     renderer->draw_static_instanced("cube", "texture_array_test", terrain_gpu_handle);
 }
+
+    std::vector<Terrain::Greedy_Tile> Terrain::generate_greedy_mesh(
+    const std::vector<Tile_Data>& map_data, int lowest)
+    {
+        std::vector<Greedy_Tile> result;
+
+        std::vector<bool> visited(map_width * map_length, false);
+
+
+        for (int z = 0; z < map_length; z++)
+        {
+            for (int x = 0; x < map_width; x++)
+            {
+                int index = z * map_width + x;
+
+                if (visited[index])
+                    continue;
+
+
+                const auto& tile = map_data[index];
+
+
+                int texture;
+
+                if(tile.tile_type & 1)
+                    texture = 0;
+                else if(tile.tile_type & 2)
+                    texture = 1;
+                else if(tile.tile_type & 4)
+                    texture = 2;
+                else
+                    texture = 3;
+
+
+                int height = tile.height - lowest + 1;
+
+
+                // zoek maximale breedte
+                int width = 1;
+
+                while(x + width < map_width)
+                {
+                    int i = z * map_width + x + width;
+
+                    if(visited[i])
+                        break;
+
+
+                    auto& t = map_data[i];
+
+
+                    int tex;
+
+                    if(t.tile_type & 1)
+                        tex = 0;
+                    else if(t.tile_type & 2)
+                        tex = 1;
+                    else if(t.tile_type & 4)
+                        tex = 2;
+                    else
+                        tex = 3;
+
+
+                    if(t.height - lowest + 1 != height || tex != texture)
+                        break;
+
+
+                    width++;
+                }
+
+
+                // zoek lengte
+                int length = 1;
+
+                bool stop=false;
+
+                while(z + length < map_length && !stop)
+                {
+                    for(int xx=0; xx<width; xx++)
+                    {
+                        int i = (z+length)*map_width + x+xx;
+
+
+                        if(visited[i])
+                        {
+                            stop=true;
+                            break;
+                        }
+
+
+                        auto& t = map_data[i];
+
+
+                        int tex;
+
+                        if(t.tile_type & 1)
+                            tex=0;
+                        else if(t.tile_type &2)
+                            tex=1;
+                        else if(t.tile_type &4)
+                            tex=2;
+                        else
+                            tex=3;
+
+
+                        if(t.height - lowest + 1 != height || tex != texture)
+                        {
+                            stop=true;
+                            break;
+                        }
+                    }
+
+
+                    if(!stop)
+                        length++;
+                }
+
+
+
+                // markeer gebruikt
+                for(int zz=0; zz<length; zz++)
+                {
+                    for(int xx=0; xx<width; xx++)
+                    {
+                        visited[(z+zz)*map_width+x+xx]=true;
+                    }
+                }
+
+
+
+                result.push_back(
+                {
+                    x,
+                    z,
+                    width,
+                    length,
+                    height,
+                    texture
+                });
+            }
+        }
+
+
+        return result;
+    }
 
 float Terrain::get_height(const glm::vec2& position2d) const
 {
@@ -191,15 +338,18 @@ std::vector<glm::vec2> Terrain::find_route(const glm::vec2& start_position, cons
 
         // als target bereikt, reconstrueer en return pad
         if (current.pos == target_tile)
+        {
             return reconstruct_path(parents, start_tile, current.pos);
+        }
 
         // converteer 2D grid positie naar 1D index voor visited array
         int index = current.pos.x * max_width + current.pos.y;
         if (visited[index]) continue;   // skip als al processed
         visited[index] = true;  // markeer visited
+        auto neighbours = get_neighbours(current.pos);
 
         // verwerk alle valid neighboring tiles
-        for (const glm::ivec2& neighbour : get_neighbours(current.pos))
+        for (const glm::ivec2& neighbour : neighbours)
         {
             int neighbour_index = neighbour.x * max_width + neighbour.y;
             if (!visited[neighbour_index]) {
@@ -308,6 +458,8 @@ std::vector<Terrain::Tile_Data> Terrain::read_map_file(const std::filesystem::pa
 
     std::vector<Tile_Data> map_tiles;
     map_tiles.reserve(image_width * image_height);
+    
+    std::cout << map_width << " x " << map_length << std::endl;
 
     for (size_t y = 0; y < image_height; y++)
     {

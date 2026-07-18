@@ -15,7 +15,7 @@ struct Transform
     void set_height(const float height);
     void set_direction2d(const glm::vec2& direction2d);
 
-    glm::mat4 get_matrix() const;
+    const glm::mat4& get_matrix() const;
 
     void update_matrix() const
     {

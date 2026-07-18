@@ -7,15 +7,16 @@ Shield::Shield(const std::string& texture_array_name)
 
 }
 
-void Shield::update(const std::vector<Hero>& heroes)
+void Shield::update(const HeroSystem& hero_system)
 {
     //Gather all hero positions if they have mana left
     std::vector<glm::vec3> points;
-    for (const auto& hero : heroes)
+    // Haal posities rechtstreeks uit de parallelle array
+    for (size_t i = 0; i < hero_system.size(); ++i)
     {
-        if (hero.get_mana() > 0 && hero.is_active())
+        if (hero_system.mana[i] > 0 && hero_system.active[i])
         {
-            points.emplace_back(hero.get_position());
+            points.emplace_back(hero_system.position[i]);
         }
     }
 
@@ -191,45 +192,46 @@ bool Shield::intersects(const glm::vec2& circle_center, float radius) const
     return false; //No intersection
 }
 
-void Shield::absorb(std::vector<Hero>& heroes, glm::vec2 point) const
+void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const
 {
-    std::vector<Hero*> closest_heroes;
+    // Bewaar indices (size_t) in plaats van pointers (Hero*)
+    std::vector<size_t> closest_heroes;
     std::vector<float> closest_distances(n_to_sustain, std::numeric_limits<float>::max());
 
-    for (auto& hero : heroes)
+    for (size_t i = 0; i < hero_system.size(); i++)
     {
-        float distance_squared = glm::length2(hero.get_position2d() - point);
+        if (!hero_system.active[i]) continue;
 
-        //If we haven't filled the closest list yet, add this hero
+        glm::vec2 pos2d(hero_system.position[i].x, hero_system.position[i].z);
+        float distance_squared = glm::length2(pos2d - point);
+
         if (closest_heroes.size() < n_to_sustain)
         {
-            closest_heroes.push_back(&hero);
+            closest_heroes.push_back(i);
             closest_distances[closest_heroes.size() - 1] = distance_squared;
         }
         else
         {
-            //Check if this hero is closer than any in the current closest list
             size_t farthest = 0;
-            for (size_t i = 1; i < closest_heroes.size(); i++)
+            for (size_t j = 1; j < closest_heroes.size(); j++)
             {
-                if (closest_distances[farthest] < closest_distances[i])
+                if (closest_distances[farthest] < closest_distances[j])
                 {
-                    farthest = i;
+                    farthest = j;
                 }
             }
 
             if (distance_squared < closest_distances[farthest])
             {
-                //Replace the farthest hero with the current closer hero
-                closest_heroes[farthest] = &hero;
+                closest_heroes[farthest] = i;
                 closest_distances[farthest] = distance_squared;
             }
         }
     }
 
-    for (auto& hero : closest_heroes)
+    for (size_t index : closest_heroes)
     {
-        hero->drain_mana(mana_cost);
+        hero_system.drain_mana(index, mana_cost);
     }
 }
 
