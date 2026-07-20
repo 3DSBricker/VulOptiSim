@@ -2,14 +2,13 @@
 
 #include <vector>
 #include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <atomic>
 #include <functional>
 #include <future>
 #include <memory>
 #include <iostream>
 #include <algorithm>
+#include <immintrin.h>
 
 class ThreadPool
 {
@@ -48,7 +47,6 @@ public:
     {
         if (count == 0) return;
 
-        // Kortsluiting voor kleine datasets
         if (count < workers.size() * 4) {
             for (size_t i = 0; i < count; i++) {
                 func(i);
@@ -59,13 +57,12 @@ public:
         const size_t chunk_size = std::max<size_t>(1, count / (workers.size() * 8));
         const size_t total_chunks = (count + chunk_size - 1) / chunk_size;
 
+        // Mutex en CV zijn verwijderd uit de Context
         struct Context {
             std::atomic<size_t> current_chunk{0};
             size_t count;
             size_t chunk_size;
             size_t total_chunks;
-            std::mutex mtx;
-            std::condition_variable cv;
             Func* f_ptr;
 
             Context(size_t c, size_t cs, size_t tc, Func* func_ptr) 
@@ -75,49 +72,43 @@ public:
         Context ctx(count, chunk_size, total_chunks, &func);
         const size_t tasks_to_queue = std::min(workers.size(), total_chunks);
         
-        // Houd exact bij hoeveel threads deze specifieke taak momenteel uitvoeren
         std::atomic<size_t> threads_running{ tasks_to_queue + 1 };
 
         auto worker_task = [&ctx, &threads_running]() {
             while (true) {
                 size_t chunk_id = ctx.current_chunk.fetch_add(1, std::memory_order_relaxed);
                 if (chunk_id >= ctx.total_chunks) {
-                    break; // Geen chunks meer over, breek uit de loop
+                    break; 
                 }
 
                 size_t start = chunk_id * ctx.chunk_size;
                 size_t end = std::min(start + ctx.chunk_size, ctx.count);
 
-                // De normale parallel_for roept de functie aan met 1 argument (i)
                 for (size_t i = start; i < end; ++i) {
                     (*ctx.f_ptr)(i); 
                 }
             }
             
-            // CRUCIAL: Eerst de lock pakken, DAN pas afmelden!
-            // Dit voorkomt dat de main thread de 'ctx' vernietigt voordat we notify_one() hebben geroepen.
-            {
-                std::lock_guard<std::mutex> lock(ctx.mtx);
-                if (threads_running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    ctx.cv.notify_one();
-                }
-            } // Hier laten we de lock los, en pas NU kan de main thread de ctx veilig vernietigen.
+            // Simpelweg afmelden zonder lock, dankzij memory_order_release
+            threads_running.fetch_sub(1, std::memory_order_release);
         };
 
-        // Zet de taken in de queue voor de workers
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-            for(size_t i = 0; i < tasks_to_queue; ++i) tasks.push_back(worker_task);
+            for(size_t i = 0; i < tasks_to_queue; ++i)
+            {
+                tasks.push_back(worker_task);
+            }
         }
         condition.notify_all();
 
         worker_task(); // De hoofdthread helpt direct mee
 
-        // Wacht tot alle threads (inclusief de hoofdthread) ECHT uit de worker_task zijn
-        std::unique_lock<std::mutex> lock(ctx.mtx);
-        ctx.cv.wait(lock, [&] { 
-            return threads_running.load(std::memory_order_acquire) == 0; 
-        });
+        // ADAPTIVE SPIN-WAIT (Dé oplossing voor je freeze)
+        // _mm_pause() is hardware-level wachten: 0% OS overhead, 0 context-swaps.
+        while (threads_running.load(std::memory_order_acquire) > 0) {
+            _mm_pause(); 
+        } 
     }
     
     template<typename Func>
@@ -141,8 +132,6 @@ public:
             size_t count;
             size_t chunk_size;
             size_t total_chunks;
-            std::mutex mtx;
-            std::condition_variable cv;
             Func* f_ptr;
 
             Context(size_t c, size_t cs, size_t tc, Func* func_ptr) 
@@ -152,7 +141,6 @@ public:
         Context ctx(count, chunk_size, total_chunks, &func);
         const size_t tasks_to_queue = std::min(workers.size(), total_chunks);
         
-        // Houd exact bij hoeveel threads deze specifieke taak momenteel uitvoeren
         std::atomic<size_t> threads_running{ tasks_to_queue + 1 };
 
         auto worker_task = [&ctx, &threads_running]() {
@@ -170,30 +158,26 @@ public:
                 }
             }
             
-            // CRUCIAL: Eerst de lock pakken, DAN pas afmelden!
-            // Dit voorkomt dat de main thread de 'ctx' vernietigt voordat we notify_one() hebben geroepen.
-            {
-                std::lock_guard<std::mutex> lock(ctx.mtx);
-                if (threads_running.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    ctx.cv.notify_one();
-                }
-            } // Hier laten we de lock los, en pas NU kan de main thread de ctx veilig vernietigen.
-            
+            // Simpelweg afmelden zonder lock
+            threads_running.fetch_sub(1, std::memory_order_release);
         };
 
         {
             std::lock_guard<std::mutex> lock(queue_mutex);
-            for(size_t i = 0; i < tasks_to_queue; ++i) tasks.push_back(worker_task);
+            for(size_t i = 0; i < tasks_to_queue; ++i)
+            {
+                tasks.push_back(worker_task);
+            }
         }
         condition.notify_all();
 
         worker_task(); // Main thread helpt mee
 
-        // Wacht tot alle threads VEILIG uit de worker_task zijn verdwenen
-        std::unique_lock<std::mutex> lock(ctx.mtx);
-        ctx.cv.wait(lock, [&] { 
-            return threads_running.load(std::memory_order_acquire) == 0; 
-        });
+        // ADAPTIVE SPIN-WAIT
+        // _mm_pause() is hardware-level wachten: 0% OS overhead, 0 context-swaps.
+        while (threads_running.load(std::memory_order_acquire) > 0) {
+            _mm_pause(); 
+        }
     }
 
     template <class T>
@@ -226,6 +210,7 @@ public:
     }
 
 private:
+    
     void worker_loop()
     {
         while (true)

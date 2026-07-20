@@ -98,8 +98,13 @@ struct HeroSystem {
                     }
 
                     // Face target (rotatie opslaan in de array)
-                    float angle = atan2f(dir.x, dir.y);
-                    rotation[i] = glm::rotate(glm::mat4(1.0f), angle, glm::vec3(0.0f, 1.0f, 0.0f));
+                    // (0 wiskunde, enkel in het geheugen prikken):
+                    rotation[i] = glm::mat4(1.0f);
+                    rotation[i][0][0] =  dir.y; 
+                    rotation[i][0][2] = -dir.x; 
+                    rotation[i][2][0] =  dir.x; 
+                    rotation[i][2][2] =  dir.y;
+                    
                 }
                 
                 if (glm::length2(target - pos2d) < terrain.tile_width) {

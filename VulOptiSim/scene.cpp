@@ -250,26 +250,18 @@ size_t Scene::get_staff_count() const
  */
 void Scene::check_collisions()
 {
-    const size_t num_workers = pool.thread_count();
-    
-    if (collision_force_buffers.size() != num_workers || collision_force_buffers[0].size() != hero_system.size()) {
-        collision_force_buffers.resize(num_workers, std::vector<glm::vec2>(hero_system.size(), glm::vec2{0.f}));
-    }
-
-    for (auto& buffer : collision_force_buffers) {
-        std::fill(buffer.begin(), buffer.end(), glm::vec2{0.f});
-    }
-
-    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+    pool.parallel_for(hero_system.size(), [&](size_t i) {
         if (!hero_system.active[i]) return;
 
-        auto& forces = collision_force_buffers[chunk_id];
         glm::vec2 pos_i(hero_system.position[i].x, hero_system.position[i].z);
         int cell = hero_grid.get_cell_id(pos_i);
         
-        int j = hero_grid.head[cell]; // Start van de linked list
+        glm::vec2 force{ 0.f };
+        int j = hero_grid.get_head(cell); // Gebruik onze nieuwe get_head() functie
+        
         while (j != -1) {
-            if (i < (size_t)j && hero_system.active[j]) { 
+            // Check symmetrisch (!= in plaats van <), dan heeft worker 'i' geen buffers nodig
+            if (i != (size_t)j && hero_system.active[j]) { 
                 const float radius_sum = hero_system.collision_radius[i] + hero_system.collision_radius[j];
                 glm::vec2 pos_j(hero_system.position[j].x, hero_system.position[j].z);
                 
@@ -278,25 +270,15 @@ void Scene::check_collisions()
 
                 if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f) {
                     const float dist = std::sqrt(dist_sq);
-                    const glm::vec2 force = glm::normalize(diff) * (radius_sum - dist);
-
-                    forces[i] -= force;
-                    forces[j] += force; 
+                    force -= (diff / dist) * (radius_sum - dist); 
                 }
             }
-            j = hero_grid.next[j]; // Naar de volgende hero in deze cell
+            j = hero_grid.next[j]; 
         }
+        
+        // Schrijf direct naar de SoA. 100% thread-safe, 0 locks, 0 extra buffers.
+        hero_system.force[i] += force; 
     });
-
-    for (size_t i = 0; i < hero_system.size(); i++) {
-        glm::vec2 total_force{ 0.f };
-        for (size_t w = 0; w < num_workers; w++) {
-            total_force += collision_force_buffers[w][i];
-        }
-        if (glm::length2(total_force) > 0.f) {
-            hero_system.force[i] += total_force; // Direct toevoegen aan de SoA
-        }
-    }
 }
 
 void Scene::update(const float delta_time)
@@ -394,76 +376,62 @@ void Scene::update(const float delta_time)
 void Scene::draw()
 {
     visible_hero_count = 0;
-    visible_staff_count = 0;
     const glm::vec3 cam_pos = camera.get_position();
     
     const size_t hero_count  = hero_system.size();
-    const size_t staff_count = staves.size();
     const size_t num_workers = pool.thread_count();
     
-    // Bereken exact hoeveel chunks de threadpool maximaal gaat maken
-    const size_t hero_chunk_size = (hero_count + num_workers - 1) / num_workers;
-    const size_t total_hero_chunks = hero_chunk_size > 0 ? (hero_count + hero_chunk_size - 1) / hero_chunk_size : 1;
+    // Zorg dat elke worker zijn eigen chunk heeft
+    if (lod0_chunks.size() != num_workers) {
+        lod0_chunks.resize(num_workers);
+        lod1_chunks.resize(num_workers);
+        lod2_chunks.resize(num_workers);
+    }
 
-    const size_t staff_chunk_size = (staff_count + num_workers - 1) / num_workers;
-    const size_t total_staff_chunks = staff_chunk_size > 0 ? (staff_count + staff_chunk_size - 1) / staff_chunk_size : 1;
+    // Snelle clear
+    pool.parallel_for(num_workers, [&](size_t w) {
+        lod0_chunks[w].data.clear();
+        lod1_chunks[w].data.clear();
+        lod2_chunks[w].data.clear();
+    });
 
-    // Direct en gegarandeerd resizen naar de exacte chunk-grootte
-    lod0_chunks.resize(total_hero_chunks);
-    lod1_chunks.resize(total_hero_chunks);
-    lod2_chunks.resize(total_hero_chunks);
-    staff_chunks.resize(total_staff_chunks);
-
-    // Alle actieve buffers grondig cleanen
-    for (auto& c : lod0_chunks)  c.clear();
-    for (auto& c : lod1_chunks)  c.clear();
-    for (auto& c : lod2_chunks)  c.clear();
-    for (auto& c : staff_chunks) c.clear();
-
-    // Culling Heroes 
-    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+    pool.parallel_for_chunked(hero_count, [&](size_t i, size_t chunk_id) {
         glm::vec3 pos = hero_system.position[i];
-        float dx = pos.x - cam_pos.x, dy = pos.y - cam_pos.y, dz = pos.z - cam_pos.z;
-        float dist2 = dx * dx + dy * dy + dz * dz;
+        
+        float dx = pos.x - cam_pos.x;
+        float dz = pos.z - cam_pos.z;
+        float dist2 = (dx * dx) + (dz * dz);
 
         if (dist2 < LOD2_DIST2) {
             glm::mat4 transform = hero_system.get_transform_matrix(i);
             
-            if (dist2 < LOD0_DIST2)      lod0_chunks[chunk_id].push_back(transform);
-            else if (dist2 < LOD1_DIST2) lod1_chunks[chunk_id].push_back(transform);
-            else                         lod2_chunks[chunk_id].push_back(transform);
+            // Lokaal schrijven, GEEN atomic fetch_add meer!
+            if (dist2 < LOD0_DIST2)      lod0_chunks[chunk_id].data.push_back(transform);
+            else if (dist2 < LOD1_DIST2) lod1_chunks[chunk_id].data.push_back(transform);
+            else                         lod2_chunks[chunk_id].data.push_back(transform);
         }
     });
 
-    // Culling Staves
-    pool.parallel_for_chunked(staff_count, [&](size_t i, size_t chunk_id) {
-        glm::mat4 transform = staves[i].get_transform_matrix();
-        glm::vec3 pos = glm::vec3(transform[3]); 
-        glm::vec3 diff = pos - cam_pos;
-            
-        if (glm::dot(diff, diff) < MAX_DIST_SQ) {
-            visible_staff_count.fetch_add(1, std::memory_order_relaxed);
-            staff_chunks[chunk_id].push_back(transform); 
-        }
-    });
-
-    // Samenvoegen op de hoofdthread (NU 100% VEILIG, want alle workers zijn ECHT dood)
-    lod0.clear(); lod1.clear(); lod2.clear(); visible_staff_transforms.clear();
+    // Merge het bliksemsnel terug op de main thread voor de renderer
+    lod0.clear(); lod1.clear(); lod2.clear();
+    for (size_t w = 0; w < num_workers; w++) {
+        lod0.insert(lod0.end(), lod0_chunks[w].data.begin(), lod0_chunks[w].data.end());
+        lod1.insert(lod1.end(), lod1_chunks[w].data.begin(), lod1_chunks[w].data.end());
+        lod2.insert(lod2.end(), lod2_chunks[w].data.begin(), lod2_chunks[w].data.end());
+    }
     
-    for (size_t i = 0; i < total_hero_chunks; ++i) {
-        if (!lod0_chunks[i].empty()) lod0.insert(lod0.end(), lod0_chunks[i].begin(), lod0_chunks[i].end());
-        if (!lod1_chunks[i].empty()) lod1.insert(lod1.end(), lod1_chunks[i].begin(), lod1_chunks[i].end());
-        if (!lod2_chunks[i].empty()) lod2.insert(lod2.end(), lod2_chunks[i].begin(), lod2_chunks[i].end());
+    staff_transforms.resize(staves.size());
+    
+    for (size_t idx = 0; idx < staves.size(); ++idx)
+    {
+        staff_transforms[idx] = staves[idx].get_transform_matrix();
     }
-    for (size_t i = 0; i < total_staff_chunks; ++i) {
-        if (!staff_chunks[i].empty()) visible_staff_transforms.insert(visible_staff_transforms.end(), staff_chunks[i].begin(), staff_chunks[i].end());
-    }
-
+    
     // --- RENDER CALLS ---
     if (!lod0.empty()) renderer->draw_batch("frieren-blob", "frieren-blob", lod0);
     if (!lod1.empty()) renderer->draw_batch("frieren-lod1", "frieren-blob", lod1);
     if (!lod2.empty()) renderer->draw_batch("frieren-lod2", "frieren-blob", lod2);
-    if (!visible_staff_transforms.empty()) renderer->draw_batch("staff", "staff", visible_staff_transforms);
+    if (!staff_transforms.empty()) renderer->draw_batch("staff", "staff", staff_transforms);
         
     terrain->draw(renderer);
         
