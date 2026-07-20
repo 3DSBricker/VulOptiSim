@@ -1,0 +1,126 @@
+#pragma once
+
+namespace vulvox
+{
+    /// <summary>
+    /// Struct containing the indices of the command queues we require
+    /// For this program we need a graphics and present capable queue.
+    /// The families supporting these queues are stored in this class
+    /// </summary>
+    struct Queue_Family_Indices
+    {
+        std::optional<uint32_t> graphics_family;
+        std::optional<uint32_t> present_family;
+
+        /// <summary>
+        /// Check if all queue families are filled.
+        /// </summary>
+        /// <returns>Returns true if all queue families indices are initialized.</returns>
+        bool is_complete() const;
+    };
+
+    struct Swap_Chain_Support_Details
+    {
+        VkSurfaceCapabilitiesKHR capabilities;
+        std::vector<VkSurfaceFormatKHR> formats;
+        std::vector<VkPresentModeKHR> present_modes;
+    };
+
+    class Vulkan_Instance
+    {
+    public:
+
+        Vulkan_Instance() = default;
+
+        void init_instance();
+        void init_surface(GLFWwindow* window);
+        void init_device();
+        void init_allocator();
+
+        void cleanup_allocator();
+        void cleanup_instance();
+        void cleanup_surface();
+        void cleanup_device();
+
+        std::string get_physical_device_name() const;
+        std::string get_physical_device_type() const;
+
+        VkPhysicalDeviceProperties get_physical_device_properties() const;
+        VkPhysicalDeviceMemoryProperties get_physical_memory_device_properties() const;
+
+        Swap_Chain_Support_Details query_swap_chain_support(const VkSurfaceKHR surface) const;
+        Queue_Family_Indices get_queue_families(const VkSurfaceKHR surface) const;
+
+        VkFormat find_depth_format();
+
+        VkFormat find_supported_format(const std::vector<VkFormat>& candidates, VkImageTiling tiling, VkFormatFeatureFlags features);
+
+        uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags properties) const;
+
+        std::string get_memory_statistics() const;
+
+        /// <summary>
+        /// True if the selected device exposes descriptor indexing features sufficient
+        /// for a bindless texture setup (update-after-bind, partially bound, non-uniform
+        /// indexing, variable descriptor count, runtime descriptor arrays).
+        /// Useful to know before building bindless descriptor layouts in a later phase.
+        /// </summary>
+        bool supports_bindless_textures() const { return bindless_textures_supported; }
+
+        //Vulkan and device contexts
+        VkInstance instance = VK_NULL_HANDLE; //Vulkan context (driver access)
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        VkPhysicalDevice physical_device = VK_NULL_HANDLE; //Physical GPU
+        VkDevice device = VK_NULL_HANDLE; //Logical GPU context
+
+        //Memory allocation helper
+        VmaAllocator allocator;
+
+        //Queues that send commands to the command buffers
+        VkQueue graphics_queue = VK_NULL_HANDLE;
+        VkQueue present_queue = VK_NULL_HANDLE;
+
+    private:
+
+        //Set once the logical device is created, based on VkPhysicalDeviceVulkan12Features support.
+        bool bindless_textures_supported = false;
+
+        //Queries VkPhysicalDeviceVulkan13Features / Vulkan12Features support for a candidate device.
+        //Required: dynamicRendering + synchronization2 (Vulkan 1.3 core features we rely on everywhere).
+        bool check_required_1_3_features(const VkPhysicalDevice& physical_device_candidate) const;
+
+        //Creates a vulkan instance so we can access the driver
+        void create_instance();
+
+        //Select the GPU to use among available physical devices.
+        void pick_physical_device(const VkSurfaceKHR surface);
+        int rate_physical_device(const VkSurfaceKHR surface, const VkPhysicalDevice& physical_device_candidate) const;
+        bool check_glfw_extension_support() const;
+        bool check_device_extension_support(const VkPhysicalDevice& physical_device) const;
+        bool check_validation_layer_support() const;
+
+        Swap_Chain_Support_Details query_swap_chain_support(const VkSurfaceKHR surface, const VkPhysicalDevice& physical_device) const;
+
+        Queue_Family_Indices find_queue_families(const VkSurfaceKHR surface, const VkPhysicalDevice& physical_device) const;
+
+        //Create the handle to the selected physical device
+        void create_logical_device(const VkSurfaceKHR surface);
+
+        std::string get_physical_device_name(const VkPhysicalDevice& physical_device) const;
+        std::string get_physical_device_type(const VkPhysicalDevice& physical_device) const;
+        std::string get_physical_device_vulkan_support(const VkPhysicalDevice& physical_device) const;
+
+        //Required device extensions.
+        //Dynamic rendering, synchronization2 and descriptor indexing are core Vulkan 1.3 / 1.2
+        //features now (enabled via the Vulkan12Features/Vulkan13Features feature structs), so they
+        //no longer need to be listed here as extension strings.
+        const std::vector<const char*> device_extensions = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        const std::vector<const char*> validation_layers = { "VK_LAYER_KHRONOS_validation" };
+
+#ifdef ENABLE_VALIDATION_LAYERS
+        const bool enableValidationLayers = true;
+#else
+        const bool enableValidationLayers = false;
+#endif
+    };
+}
