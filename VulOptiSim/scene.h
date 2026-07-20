@@ -42,6 +42,15 @@ private:
     bool f1_was_pressed = false;
     size_t update_frame = 0;
     size_t draw_frame = 0;
+    
+    struct Mat4Chunk {
+        std::vector<glm::mat4> data;
+        char padding[64]; // Handmatige padding ipv alignas() om MSVC heap crashes te fixen
+    
+        Mat4Chunk() { 
+            data.reserve(5000); // Ruim pre-alloceren voorkomt her-allocaties tijdens draw
+        }
+    };
 
     void handle_input(const float delta_time);
     void show_controls();
@@ -67,9 +76,9 @@ private:
     float LOD1_DIST2 = 350.0f * 350.0f;
     float LOD2_DIST2 = 600.0f * 600.0f;
     
-    std::vector<std::vector<glm::mat4>> lod0_chunks;
-    std::vector<std::vector<glm::mat4>> lod1_chunks;
-    std::vector<std::vector<glm::mat4>> lod2_chunks;
+    std::vector<Mat4Chunk> lod0_chunks;
+    std::vector<Mat4Chunk> lod1_chunks;
+    std::vector<Mat4Chunk> lod2_chunks;
     std::vector<std::vector<glm::mat4>> staff_chunks;
     // std::vector<std::vector<glm::mat4>> lod3_chunks;
     
@@ -106,18 +115,20 @@ private:
     std::unique_ptr<Terrain> terrain;
 
     Shield shield;
-    
+
     struct Grid {
         int width;
         float cell_size;
         std::vector<int> head;
+        std::vector<int> head_frame; // NIEUW: Slaat op in welke frame deze cel voor het laatst is geüpdatet
         std::vector<int> next;
+        int current_frame = 1;       // NIEUW
 
-        // Geef de max grootte van je map mee (bijv 10000.0f)
         Grid(float max_world_size, float size) : cell_size(size) {
             width = static_cast<int>(max_world_size / size) + 1;
             head.assign(width * width, -1);
-            next.assign(20000, -1); // Ruimte voor max 20k heroes (pas aan indien nodig)
+            head_frame.assign(width * width, 0);
+            next.assign(20000, -1); 
         }
 
         inline int get_cell_id(const glm::vec2& pos) const {
@@ -127,18 +138,27 @@ private:
         }
 
         void clear() { 
-            // O(N) maar extreem cache-vriendelijk en 0 allocaties!
-            std::fill(head.begin(), head.end(), -1); 
+            current_frame++; // O(1) clear! Kost 0.000 ms.
         }
 
         void add_hero(int hero_index, const glm::vec2& position) {
             if (hero_index >= next.size()) next.resize(hero_index * 2, -1);
             int cell = get_cell_id(position);
-            
+        
             if(cell < head.size()) {
+                if (head_frame[cell] != current_frame) {
+                    head[cell] = -1; // Lazy reset van de cel als hij van een oude frame is
+                    head_frame[cell] = current_frame;
+                }
                 next[hero_index] = head[cell];
                 head[cell] = hero_index;
             }
+        }
+    
+        // Nieuwe helper functie voor de collision logic
+        int get_head(int cell) const {
+            if (cell >= head.size() || head_frame[cell] != current_frame) return -1;
+            return head[cell];
         }
     };
 
