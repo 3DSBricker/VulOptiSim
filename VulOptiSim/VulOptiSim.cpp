@@ -128,7 +128,13 @@ int main()
         // visible. Enable culling only after their winding/order is corrected.
         renderer_configuration.enable_back_face_culling = false;
 
-        renderer.init(width, height, glm::radians(45.0f), 0.1f, 1000.0f, renderer_configuration);
+        try {
+            renderer.init(width, height, glm::radians(45.0f), 0.1f, 1000.0f, renderer_configuration);
+        } catch (const std::exception& e) {
+            std::cerr << "Init error: " << e.what() << std::endl;
+            return -1;
+        }
+
         renderer.init_imgui();
 
         renderer.set_dark_theme();

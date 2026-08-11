@@ -116,6 +116,18 @@ namespace vulvox
         vkDestroyPipeline(vulkan_instance.device, vertex_pipeline, nullptr);
         vkDestroyPipeline(vulkan_instance.device, instance_pipeline, nullptr);
         vkDestroyPipeline(vulkan_instance.device, instance_tex_array_pipeline, nullptr);
+        
+        vkDestroyPipeline(vulkan_instance.device, static_terrain_pipeline, nullptr);
+        vkDestroyPipeline(vulkan_instance.device, instance_terrain_pipeline, nullptr);
+
+        for (auto& [handle, group] : static_instance_groups)
+        {
+            if (group.matrix_buffer != VK_NULL_HANDLE)
+            {
+                vmaDestroyBuffer(vulkan_instance.allocator, group.matrix_buffer, group.matrix_allocation);
+            }
+        }
+        static_instance_groups.clear();
 
         vkDestroyPipelineLayout(vulkan_instance.device, pipeline_layout, nullptr);
 
@@ -591,78 +603,43 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
         frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * instance_count;
     }
     
-    template<typename T>
-    void Vulkan_Engine::create_static_gpu_buffer(const std::vector<T>& data, VkBuffer& out_buffer, VmaAllocation& out_allocation)
-        {
-            VkDeviceSize buffer_size = sizeof(T) * data.size();
-
-            // Configureer de buffer voor permanente opslag op de GPU (VRAM)
-            VkBufferCreateInfo buffer_info = {};
-            buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-            buffer_info.size = buffer_size;
-            buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-            buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-            VmaAllocationCreateInfo alloc_info = {};
-            // CPU_TO_GPU zorgt dat we er makkelijk bij kunnen om te schrijven (of gebruik staging als je dat al hebt)
-            alloc_info.usage = VMA_MEMORY_USAGE_CPU_TO_GPU; 
-
-            // Gebruik je vmaAllocator (vervang 'allocator' door hoe die in jouw engine heet!)
-            vmaCreateBuffer(vulkan_instance.allocator, &buffer_info, &alloc_info, &out_buffer, &out_allocation, nullptr);
-
-            // Kopieer de data er eenmalig in
-            void* mapped_data;
-            vmaMapMemory(vulkan_instance.allocator, out_allocation, &mapped_data);
-            std::memcpy(mapped_data, data.data(), buffer_size);
-            vmaUnmapMemory(vulkan_instance.allocator, out_allocation);
-        }
-    
-    StaticInstanceHandle Vulkan_Engine::register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
+    // Let op de nieuwe parameter!
+    Vulkan_Engine::StaticInstanceHandle Vulkan_Engine::register_static_instances(const std::vector<TerrainInstanceData>& instance_data)
     {
         StaticInstanceGroup group;
-        group.instance_count = static_cast<uint32_t>(model_matrices.size());
+        group.instance_count = static_cast<uint32_t>(instance_data.size());
 
-        // Maak de twee permanente buffers aan
-        create_static_gpu_buffer(model_matrices, group.matrix_buffer, group.matrix_allocation);
-        create_static_gpu_buffer(texture_indices, group.index_buffer, group.index_allocation);
+        // We hebben nu nog maar ÉÉN buffer nodig in de group struct!
+        create_static_gpu_buffer(instance_data, group.matrix_buffer, group.matrix_allocation);
+        // group.index_buffer hebben we niet meer nodig en mag uit je StaticInstanceGroup struct.
 
-        // Genereer een uniek ID en sla de groep op
-        vulvox::StaticInstanceHandle handle = next_static_handle++;
+        Vulkan_Engine::StaticInstanceHandle handle = next_static_handle++;
         static_instance_groups[handle] = group;
 
         return handle;
     }
-
-    void Vulkan_Engine::draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, vulvox::StaticInstanceHandle handle)
+    
+    void Vulkan_Engine::draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle)
     {
-        // Bestaat deze groep wel?
         if (!static_instance_groups.contains(handle)) return;
-        if (!models.contains(model_name) || !texture_arrays.contains(texture_array_name)) return;
+        if (!texture_arrays.contains(texture_array_name)) return;
 
         const auto& group = static_instance_groups.at(handle);
 
-        // Bind de camera uniform buffers (MVP) en textures
         bind_descriptor_set(0, descriptor_sets.instance_descriptor_set[current_frame]);
         bind_descriptor_set(1, texture_array_descriptor_sets.at(texture_array_name));
 
-        // Binding point 0 - mesh vertex buffer
-        bind_vertex_buffer(0, models.at(model_name).vertex_buffer.buffer, 0);
-
-        // Binding point 1 - DIRECT binden van onze permanente matrix buffer (geen offsets nodig!)
+        // Binding point 1 - VRAM instance buffer (we binden GEEN model vertex buffer meer op 0!)
         bind_vertex_buffer(1, group.matrix_buffer, 0);
 
-        // Binding point 2 - DIRECT binden van onze permanente texture index buffer
-        bind_vertex_buffer(2, group.index_buffer, 0);
+        // Gebruik de nieuwe pipeline
+        bind_pipeline(static_terrain_pipeline);
 
-        // Bind index buffer en pipeline
-        bind_index_buffer(models.at(model_name).index_buffer.buffer);
-        bind_pipeline(instance_tex_array_pipeline);
-
-        // Renderen maar!
-        vkCmdDrawIndexed(current_command_buffer, models.at(model_name).index_count, group.instance_count, 0, 0, 0);
-        
+        // Teken 6 vertices (2 triangles voor het quad vlak), zónder index buffer
+        vkCmdDraw(current_command_buffer, 6, group.instance_count, 0, 0);
+    
         frame_statistics.draw_calls++;
-        frame_statistics.indices += static_cast<uint64_t>(models.at(model_name).index_count) * group.instance_count;
+        frame_statistics.vertices += 6ull * group.instance_count;
     }
     
     void Vulkan_Engine::draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices)
@@ -1244,10 +1221,58 @@ void Vulkan_Engine::draw_model_with_texture_array(const std::string& model_name,
             throw std::runtime_error("Failed to create plane graphics pipeline!");
         }
         
-        // --- TOE TE VOEGEN CODE VOOR TERRAIN PIPELINE ---
+        // 1. Beschrijf hoe de TerrainInstanceData wordt binnengehaald (alles op Binding 1)
+        VkVertexInputBindingDescription terrain_binding{};
+        terrain_binding.binding = 1;
+        terrain_binding.stride = sizeof(TerrainInstanceData);
+        terrain_binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
 
-        // Wissel de vertex shader om naar de terrain shader (de fragment shader en vertex bindings hergebruiken we van plane)
+        std::vector<VkVertexInputBindingDescription> terrain_bindings = {
+            terrain_binding // <-- Alleen Binding 1, de mesh binding 0 is verwijderd
+        };
+
+        // 2. Koppel de struct-variabelen aan de juiste shader locaties
+        std::vector<VkVertexInputAttributeDescription> terrain_attributes;
+
+        // Location 3: position_tex (vec4)
+        VkVertexInputAttributeDescription pos_tex_attr{};
+        pos_tex_attr.binding = 1;
+        pos_tex_attr.location = 3; 
+        pos_tex_attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        pos_tex_attr.offset = offsetof(TerrainInstanceData, position_tex);
+        terrain_attributes.push_back(pos_tex_attr);
+
+        // Location 4: scale_pad (vec4)
+        VkVertexInputAttributeDescription scale_pad_attr{};
+        scale_pad_attr.binding = 1;
+        scale_pad_attr.location = 4;
+        scale_pad_attr.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        scale_pad_attr.offset = offsetof(TerrainInstanceData, scale_pad);
+        terrain_attributes.push_back(scale_pad_attr);
+
+        // 3. Ken ze toe aan de pipeline configuratie
+        vertex_input_state_info.pVertexBindingDescriptions = terrain_bindings.data();
+        vertex_input_state_info.vertexBindingDescriptionCount = static_cast<uint32_t>(terrain_bindings.size());
+        vertex_input_state_info.pVertexAttributeDescriptions = terrain_attributes.data();
+        vertex_input_state_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(terrain_attributes.size());
+
+        shader_stages_info[0] = instance_terrain_vert_shader.get_shader_stage_create_info();
+        shader_stages_info[1] = instance_frag_tex_array_shader.get_shader_stage_create_info();
+
+        if (vkCreateGraphicsPipelines(vulkan_instance.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &static_terrain_pipeline) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create static terrain graphics pipeline!");
+        }
+        
+        // FIX: Herstel de vertex bindings en attributes terug naar de plane layout!
+        vertex_input_state_info.pVertexBindingDescriptions = plane_binding_descriptions.data();
+        vertex_input_state_info.vertexBindingDescriptionCount = static_cast<uint32_t>(plane_binding_descriptions.size());
+        vertex_input_state_info.pVertexAttributeDescriptions = plane_attribute_descriptions.data();
+        vertex_input_state_info.vertexAttributeDescriptionCount = static_cast<uint32_t>(plane_attribute_descriptions.size());
+
+        // --- DYNAMIC TERRAIN PIPELINE ---
         shader_stages_info[0] = plane_terrain_shader_stage_info; 
+        shader_stages_info[1] = instance_frag_tex_array_shader.get_shader_stage_create_info();
 
         // Maak de pipeline aan en sla hem op in instance_terrain_pipeline
         if (vkCreateGraphicsPipelines(vulkan_instance.device, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &instance_terrain_pipeline) != VK_SUCCESS)

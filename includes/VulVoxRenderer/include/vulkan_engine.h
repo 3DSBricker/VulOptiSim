@@ -1,5 +1,24 @@
 #pragma once
+
+// Standard / Library Includes
+#include <vector>
+#include <string>
+#include <unordered_map>
+#include <memory>
+#include <chrono>
+#include <filesystem>
+#include <glm/glm.hpp>
+
+// Engine Subsystem Includes
+#include "vulkan_instance.h"
 #include "renderer.h"
+#include "vulkan_image.h"
+#include "vulkan_swap_chain.h"
+#include "vulkan_command_pool.h"
+#include "vulkan_buffer_manager.h"
+#include "mvp_handler.h"
+#include "model.h"
+#include "imgui_context.h" // Ensures ImGui_Context is declared
 
 namespace vulvox
 {
@@ -15,6 +34,8 @@ namespace vulvox
     class Vulkan_Engine
     {
     public:
+        using StaticInstanceHandle = uint32_t;
+
         Vulkan_Engine();
         ~Vulkan_Engine();
 
@@ -26,9 +47,14 @@ namespace vulvox
         void init_imgui();
         void disable_imgui();
         ImGui_Context* get_imgui_context() const;
+        
+        struct TerrainInstanceData {
+            glm::vec4 position_tex; // x,y,z = wereldpositie | w = texture index
+            glm::vec4 scale_pad;    // x,y,z = schaal        | w = padding (0.0f)
+        };
 
-        uint32_t register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
-        void draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, uint32_t handle);
+        uint32_t register_static_instances(const std::vector<TerrainInstanceData>& instance_data);
+        void draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle);
         
         void destroy();
 
@@ -72,16 +98,14 @@ namespace vulvox
         //Swap chain recreation functions
         void recreate_swap_chain();
         void cleanup_swap_chain();
+        
+        VkPipeline static_terrain_pipeline = VK_NULL_HANDLE; // Specifiek voor de nieuwe struct
 
         void create_graphics_pipeline();
 
         // Administratie voor de statische groepen
-        StaticInstanceHandle next_static_handle = 1;
+        StaticInstanceHandle next_static_handle = 0;
         std::unordered_map<StaticInstanceHandle, StaticInstanceGroup> static_instance_groups;
-
-        // Handige helper om een permanente buffer aan te maken (zie stap hieronder)
-        template<typename T>
-        void create_static_gpu_buffer(const std::vector<T>& data, VkBuffer& out_buffer, VmaAllocation& out_allocation);
         
         //Records the barriers + vkCmdBeginRendering/vkCmdEndRendering calls that used to be a
         //VkRenderPass + VkFramebuffer. Dynamic rendering (core Vulkan 1.3) needs no render pass
@@ -110,6 +134,49 @@ namespace vulvox
 
         void start_record_command_buffer();
         void end_record_command_buffer();
+        
+        template<typename T>
+        void create_static_gpu_buffer(const std::vector<T>& data, VkBuffer& out_buffer, VmaAllocation& out_allocation)
+        {
+            VkDeviceSize buffer_size = sizeof(T) * data.size();
+            if (buffer_size == 0) return;
+
+            // 1. Maak de STAGING buffer aan (in traag CPU geheugen)
+            VkBufferCreateInfo staging_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            staging_info.size = buffer_size;
+            staging_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT; // We gaan hiervan kopiëren
+
+            VmaAllocationCreateInfo staging_alloc_info = {};
+            staging_alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY; // Alleen voor de CPU
+
+            VkBuffer staging_buffer;
+            VmaAllocation staging_allocation;
+            vmaCreateBuffer(vulkan_instance.allocator, &staging_info, &staging_alloc_info, &staging_buffer, &staging_allocation, nullptr);
+
+            // 2. Kopieer data van RAM naar de Staging Buffer
+            void* mapped_data;
+            vmaMapMemory(vulkan_instance.allocator, staging_allocation, &mapped_data);
+            std::memcpy(mapped_data, data.data(), buffer_size);
+            vmaUnmapMemory(vulkan_instance.allocator, staging_allocation);
+
+            // 3. Maak de ECHTE buffer aan op de GPU (Bliksemsnel VRAM)
+            VkBufferCreateInfo buffer_info = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            buffer_info.size = buffer_size;
+            buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; // We gaan hierheen kopiëren
+
+            VmaAllocationCreateInfo alloc_info = {};
+            alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY; // <-- DIT IS DE MAGIC FIX!
+
+            vmaCreateBuffer(vulkan_instance.allocator, &buffer_info, &alloc_info, &out_buffer, &out_allocation, nullptr);
+
+            // 4. Kopieer van Staging naar GPU
+            // LET OP: Gebruik hier jouw engine's manier om een kopieer-commando uit te voeren. 
+            // Heb je al een 'copy_buffer' helper functie in je Vulkan_Engine? Gebruik die dan zo:
+            command_pool.copy_buffer(staging_buffer, out_buffer, buffer_size);
+
+            // 5. Verwijder de tijdelijke staging buffer, we hebben hem niet meer nodig
+            vmaDestroyBuffer(vulkan_instance.allocator, staging_buffer, staging_allocation);
+        }
 
         VkShaderModule create_shader_module(const std::vector<char>& bytecode);
 

@@ -1,51 +1,78 @@
 #version 450
 
-layout(set = 0, binding = 0) uniform MVP
-{
-    mat4 model;
+// Hardcoded base unit quad positions (range [-0.5, 0.5])
+const vec2 QUAD_POSITIONS[6] = vec2[](
+        vec2(-0.5, -0.5),
+        vec2( 0.5, -0.5),
+        vec2(-0.5,  0.5),
+        vec2(-0.5,  0.5),
+        vec2( 0.5, -0.5),
+        vec2( 0.5,  0.5)
+);
+
+const vec2 QUAD_UVS[6] = vec2[](
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0)
+);
+
+layout(location = 0) in vec4 in_position_tex; // xyz: center pos, w: tex index
+layout(location = 1) in vec4 in_scale_pad;    // xyz: scale (w, h, l), w: face_type
+
+layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
-    mat4 projection;
-} mvp;
+    mat4 proj;
+} ubo;
 
-//Instance attributes, we skip the vertex attributes
-layout(location = 3) in mat4 instance_model_matrix; //mat4 uses 4 slots
-layout(location = 7) in uint instance_texture_index;
-layout(location = 8) in vec2 instance_uv_min;
-layout(location = 9) in vec2 instance_uv_max;
-
-
-//We can re-use the instance_shader.frag, use the same outputs
-layout(location = 0) out vec3 frag_color;
-layout(location = 1) out vec3 frag_texture_coordinate;
+layout(location = 0) out vec2 out_uv;
+layout(location = 1) out flat float out_tex_index;
 
 void main() {
+    vec2 q = QUAD_POSITIONS[gl_VertexIndex]; // q.x in [-0.5, 0.5], q.y in [-0.5, 0.5]
 
-    //hardcoded positions and texcoords for a unit square (two triangles)
-    vec2 vertices[6] = vec2[]
-    (
-        vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(-0.5, 0.5),
-        vec2( 0.5, -0.5), vec2(0.5,  0.5), vec2(-0.5, 0.5)
-    );
-    vec2 texcoords[6] = vec2[]
-    (
-        vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(0.0, 0.0),
-        vec2(1.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0)
-    );
+    vec3 center    = in_position_tex.xyz;
+    float tex_idx  = in_position_tex.w;
+    vec3 scale     = in_scale_pad.xyz;
+    int face_type  = int(in_scale_pad.w + 0.5);
 
-    vec2 vertex = vertices[gl_VertexIndex];
-    vec2 texcoord = texcoords[gl_VertexIndex];
+    vec3 local_offset = vec3(0.0);
 
-    //compute position
-    gl_Position = mvp.projection * mvp.view * mvp.model * instance_model_matrix * vec4(vertex.x, 0.0, vertex.y, 1.0);
+    // 0 = TOP (XZ plane op Y = 0)
+    if (face_type == 0) {
+        local_offset = vec3(q.x * scale.x, 0.0, q.y * scale.z);
+    }
+    // 1 = NORTH (+Z muur, strekt over X en Y)
+    else if (face_type == 1) {
+        local_offset = vec3(q.x * scale.x, q.y * scale.y, 0.0);
+    }
+    // 2 = SOUTH (-Z muur, strekt over X en Y)
+    else if (face_type == 2) {
+        local_offset = vec3(-q.x * scale.x, q.y * scale.y, 0.0);
+    }
+    // 3 = EAST (+X muur, strekt over Z en Y)
+    else if (face_type == 3) {
+        local_offset = vec3(0.0, q.y * scale.y, q.x * scale.z);
+    }
+    // 4 = WEST (-X muur, strekt over Z en Y)
+    else if (face_type == 4) {
+        local_offset = vec3(0.0, q.y * scale.y, -q.x * scale.z);
+    }
 
-    //compute texture coordinates
-    //vec2 uv_min = vec2(0,0);
-    //vec2 uv_max = vec2(1,1);
-    //vec2 uv = mix(uv_min, uv_max, texcoord);
-    vec2 uv = mix(instance_uv_min, instance_uv_max, texcoord);
-    frag_texture_coordinate = vec3(uv, float(instance_texture_index));
-    //frag_texture_coordinate = vec3(mix(instance_uv_min, instance_uv_max, texcoord), instance_texture_index);
+    vec3 world_pos = center + local_offset;
+    gl_Position = ubo.proj * ubo.view * vec4(world_pos, 1.0);
 
+    // UV Coördinaten doorgeven
+    vec2 uv = QUAD_UVS[gl_VertexIndex];
 
-    frag_color = vec3(1,1,1);
+    // Optioneel: herhaal de muurtextuur verticaal bij hoge gaten (voorkomt uitrekking)
+    if (face_type > 0) {
+        float tile_height_unit = scale.x; // Veronderstelt dat tile_width == tile_height
+        uv.y *= (scale.y / tile_height_unit);
+    }
+
+    out_uv = uv;
+    out_tex_index = tex_idx;
 }

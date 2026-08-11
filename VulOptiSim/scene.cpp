@@ -2,11 +2,12 @@
 #include "scene.h"
 #include <numeric>
 #include <execution>
-#include <algorithm> // Nodig voor std::for_each
+#include <algorithm>
+#include <immintrin.h> // VERPLICHT voor _mm_rsqrt_ss
 
 Scene::Scene(vulvox::Renderer* renderer) : renderer(renderer), terrain(std::make_unique<Terrain>(TERRAIN_PATH)),
-pool(std::min<size_t>(4, std::max(1u, std::thread::hardware_concurrency()))),
-hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere checks
+pool(std::max(1u, std::thread::hardware_concurrency())),
+hero_grid(10000.0f, 8.0f) 
 {
     auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<std::future<void>> future;
@@ -27,7 +28,6 @@ hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere 
 
     shield = Shield{ "shield" };
 
-    // Laad models & textures PARALLEL met effects/spawn/staves
     future.push_back(pool.enqueue([this] {
         auto models_start = std::chrono::high_resolution_clock::now();
         load_models_and_textures();
@@ -60,7 +60,6 @@ hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere 
         std::cout << "Staves loading took: " << staves_duration << " ms" << std::endl;
         }));
 
-    // wacht tot alle taken klaar zijn
     for (auto& f : future) {
         f.get();
     }
@@ -73,7 +72,6 @@ hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere 
               << "Total scene load (parallel): " << total_duration << " ms\n"
               << "============================\n" << std::endl;
 
-    // Laad animation effects ASYNC na scene klaar (niet blocking)
     std::cout << "\n>>> Background: Loading animation effects (parallel)...\n" << std::endl;
     pool.enqueue([this] {
         auto anim_start = std::chrono::high_resolution_clock::now();
@@ -86,12 +84,6 @@ hero_grid(10000.0f, 8.0f) // Kleinere cells = minder heroes per cell = snellere 
 
 void Scene::load_models_and_textures() const
 {
-    //Load all the models and textures we're going to need into GPU memory
-
-    //NPCs
-    //renderer->load_model("konata", MODEL_PATH);
-    //renderer->load_texture("konata", KONATA_MODAL_TEXTURE_PATH);
-
     renderer->load_model("frieren-blob", FRIEREN_PATH);
     renderer->load_model("frieren-lod1", FRIEREN_PATH_LOD1);
     renderer->load_model("frieren-lod2", FRIEREN_PATH_LOD2);
@@ -100,27 +92,21 @@ void Scene::load_models_and_textures() const
 
     renderer->load_model("staff", STAFF_PATH);
     renderer->load_texture("staff", STAFF_TEXTURE_PATH);
-
     renderer->load_model("cube", CUBE_MODEL_PATH);
-    // renderer->load_model("flat", FLAT_MODEL_PATH);
-    //renderer->load_texture("cube", CUBE_SEA_TEXTURE_PATH); // onnodig want al in texutre_paths
 }
 
 void Scene::load_effects() const
 {
-    // ECHT essentieel: terrain textures die ALTIJD zichtbaar zijn
     std::vector<std::filesystem::path> texture_paths{
         CUBE_SEA_TEXTURE_PATH,
         CUBE_GRASS_FLOWER_TEXTURE_PATH,
         CUBE_CONCRETE_WALL_TEXTURE_PATH,
         CUBE_MOSS_TEXTURE_PATH };
     renderer->load_texture_array("texture_array_test", texture_paths);
-    // Alles ander (shield, lightning, fireball) laad async
 }
 
 void Scene::load_animation_effects() const
 {
-    // Parallelize texture array loading: 3 threads, elke array apart
     std::vector<std::future<void>> futures;
     
     futures.push_back(std::async(std::launch::async, [this] {
@@ -136,7 +122,6 @@ void Scene::load_animation_effects() const
         renderer->load_texture_array("fireball", FIREBALL_TEXTURE_PATHS);
     }));
     
-    // Wacht op alle texture arrays tegelijk (parallel, niet sequentieel)
     for (auto& f : futures) {
         f.get();
     }
@@ -144,11 +129,7 @@ void Scene::load_animation_effects() const
 
 void Scene::spawn_heroes()
 {
-    //Transform hero_transform;
-    //hero_transform.rotation = glm::quatLookAt(glm::vec3(0.f, 0.f, 1.f), glm::vec3(0.f, 1.f, 0.f));
-    //hero_transform.scale = glm::vec3(1.f);
     std::cout << "Terrain ptr: " << terrain.get() << '\n';
-
 
     int start_areas = 10;
     float start_area_tile_offset = 12.f;
@@ -156,7 +137,7 @@ void Scene::spawn_heroes()
 
     float start_corner_y = 9.f * terrain->tile_width;
     float spawn_offset = terrain->tile_width / 3.f;
-    float route_cache_resolution = terrain->tile_width * 6.f; // Verhoogd van 2 naar 6 voor minder unique routes
+    float route_cache_resolution = terrain->tile_width * 6.f; 
 
     std::cout << "Spawning characters and calculating routes..." << std::endl;
 
@@ -166,7 +147,7 @@ void Scene::spawn_heroes()
     for (int s = 0; s < start_areas; s++)
     {
         futures.push_back(pool.enqueue([this, s, spawn_offset, start_corner_y, spawn_start_y, start_area_tile_offset, target, route_cache_resolution] {
-            HeroSystem local_heroes; // Maak SoA lokaal aan
+            HeroSystem local_heroes; 
             
             float start_area_offset = s * start_area_tile_offset * terrain->tile_width;
             float base_x = start_corner_y + start_area_offset;
@@ -175,8 +156,11 @@ void Scene::spawn_heroes()
                 float x = base_x + (i * spawn_offset);
                 for (int j = 0; j < 30; j++) {
                     float z = spawn_start_y + (j * spawn_offset);
-                    float y = terrain->get_height(glm::vec2(x, z));
                     glm::vec2 start_pos = glm::vec2(x, z);
+                    
+                    // Optimalisatie: Direct get_height_fast aanroepen (sneller dan standaard get_height)
+                    float y = terrain->get_height_fast(start_pos);
+                    
                     glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution);
                     
                     std::vector<glm::vec2> route;
@@ -191,31 +175,26 @@ void Scene::spawn_heroes()
                         }
                     }
 
-                    // Voeg toe aan lokale SoA: positie, speed=20.f, radius=0.5f, route
                     local_heroes.add_hero(glm::vec3(x, y, z), 20.f, 0.5f, route); 
                 }
             }
 
-            // Merge de vectoren lock-protected
             std::lock_guard<std::mutex> lock(hero_mutex);
             hero_system.merge(local_heroes); 
         }));
     }
 
-    // Wacht op alle tasks en vul grid
     for (auto& f : futures) f.get();
 
     for(size_t i = 0; i < hero_system.size(); i++) {
         hero_grid.add_hero(i, glm::vec2(hero_system.position[i].x, hero_system.position[i].z));
     }
-    
-   // Log::get_instance()->add_log("Spawned %d characters.\n", spawn_count);
 }
+
 void Scene::spawn_staves()
 {
     glm::vec2 spawn_start{ terrain->tile_width * 15.f, terrain->tile_length * 48.f };
-    
-    float height = terrain->get_height(spawn_start) + 50.f;
+    float height = terrain->get_height_fast(spawn_start) + 50.f; // Ook hier snellere call
     
     float spawn_offset_x = 12.f * terrain->tile_height;
     float spawn_offset_y = 40.f * terrain->tile_length;
@@ -231,23 +210,12 @@ void Scene::spawn_staves()
         }
     }
 
-    Log::get_instance()->add_log("Spawned %d staves.\n", spawn_count);
+    Log::get_instance()->add_log("Spawned %d staves.\n", static_cast<int>(spawn_count));
 }
 
-size_t Scene::get_character_count() const
-{
-    return hero_system.size();
-}
+size_t Scene::get_character_count() const { return hero_system.size(); }
+size_t Scene::get_staff_count() const { return staves.size(); }
 
-size_t Scene::get_staff_count() const
-{
-    return staves.size();
-
-}
-
-/**
- * Controleert botsingen tussen actieve helden en duwt ze uit elkaar indien nodig.
- */
 void Scene::check_collisions()
 {
     pool.parallel_for(hero_system.size(), [&](size_t i) {
@@ -257,10 +225,9 @@ void Scene::check_collisions()
         int cell = hero_grid.get_cell_id(pos_i);
         
         glm::vec2 force{ 0.f };
-        int j = hero_grid.get_head(cell); // Gebruik onze nieuwe get_head() functie
+        int j = hero_grid.get_head(cell); 
         
         while (j != -1) {
-            // Check symmetrisch (!= in plaats van <), dan heeft worker 'i' geen buffers nodig
             if (i != (size_t)j && hero_system.active[j]) { 
                 const float radius_sum = hero_system.collision_radius[i] + hero_system.collision_radius[j];
                 glm::vec2 pos_j(hero_system.position[j].x, hero_system.position[j].z);
@@ -269,14 +236,14 @@ void Scene::check_collisions()
                 const float dist_sq = glm::dot(diff, diff);
 
                 if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f) {
-                    const float dist = std::sqrt(dist_sq);
-                    force -= (diff / dist) * (radius_sum - dist); 
+                    float inv_dist = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dist_sq)));
+                    float dist = dist_sq * inv_dist; 
+                    force -= (diff * inv_dist) * (radius_sum - dist);
                 }
             }
             j = hero_grid.next[j]; 
         }
         
-        // Schrijf direct naar de SoA. 100% thread-safe, 0 locks, 0 extra buffers.
         hero_system.force[i] += force; 
     });
 }
@@ -310,7 +277,6 @@ void Scene::update(const float delta_time)
 
     renderer->set_view_matrix(camera.get_view_matrix());
 
-    // Mass parallel update via SoA
     pool.parallel_for(hero_system.size(), [&](size_t i) {
         hero_system.update_hero(i, delta_time, *terrain);
     });
@@ -347,7 +313,6 @@ void Scene::update(const float delta_time)
         }
     }
     
-    // Fast SoA Cleanup: Verwijder inactieve heroes swap-with-back style
     for (size_t i = 0; i < hero_system.size(); ) {
         if (!hero_system.active[i]) {
             hero_system.remove_hero(i);
@@ -356,7 +321,6 @@ void Scene::update(const float delta_time)
         }
     }
 
-    // Fast cleanup
     auto cleanup = [](auto& container) {
         size_t i = 0;
         while (i < container.size()) {
@@ -379,20 +343,24 @@ void Scene::draw()
     const glm::vec3 cam_pos = camera.get_position();
     
     const size_t hero_count  = hero_system.size();
+    const size_t staff_count = staves.size();
     const size_t num_workers = pool.thread_count();
     
-    // Zorg dat elke worker zijn eigen chunk heeft
     if (lod0_chunks.size() != num_workers) {
         lod0_chunks.resize(num_workers);
         lod1_chunks.resize(num_workers);
         lod2_chunks.resize(num_workers);
     }
 
-    // Snelle clear
+    if (staff_chunks.size() != num_workers) {
+        staff_chunks.resize(num_workers);
+    }
+    
     pool.parallel_for(num_workers, [&](size_t w) {
-        lod0_chunks[w].data.clear();
-        lod1_chunks[w].data.clear();
-        lod2_chunks[w].data.clear();
+        lod0_chunks[w].count = 0;
+        lod1_chunks[w].count = 0;
+        lod2_chunks[w].count = 0;
+        staff_chunks[w].count = 0;
     });
 
     pool.parallel_for_chunked(hero_count, [&](size_t i, size_t chunk_id) {
@@ -405,35 +373,68 @@ void Scene::draw()
         if (dist2 < LOD2_DIST2) {
             glm::mat4 transform = hero_system.get_transform_matrix(i);
             
-            // Lokaal schrijven, GEEN atomic fetch_add meer!
-            if (dist2 < LOD0_DIST2)      lod0_chunks[chunk_id].data.push_back(transform);
-            else if (dist2 < LOD1_DIST2) lod1_chunks[chunk_id].data.push_back(transform);
-            else                         lod2_chunks[chunk_id].data.push_back(transform);
+            if (dist2 < LOD0_DIST2)      lod0_chunks[chunk_id].data[lod0_chunks[chunk_id].count++] = transform;
+            else if (dist2 < LOD1_DIST2) lod1_chunks[chunk_id].data[lod1_chunks[chunk_id].count++] = transform;
+            else                         lod2_chunks[chunk_id].data[lod2_chunks[chunk_id].count++] = transform;
         }
     });
 
-    // Merge het bliksemsnel terug op de main thread voor de renderer
-    lod0.clear(); lod1.clear(); lod2.clear();
+    pool.parallel_for_chunked(staff_count, [&](size_t i, size_t chunk_id) {
+        glm::mat4 transform = staves[i].get_transform_matrix();
+        glm::vec3 pos = glm::vec3(transform[3]); 
+        
+        float dx = pos.x - cam_pos.x;
+        float dz = pos.z - cam_pos.z;
+        float dist2 = (dx * dx) + (dz * dz);
+
+        if (dist2 < LOD2_DIST2) {
+            staff_chunks[chunk_id].data[staff_chunks[chunk_id].count++] = transform;
+        }
+    });
+
+    // 1. Bereken eerst de totale groottes
+    size_t total_lod0 = 0, total_lod1 = 0, total_lod2 = 0, total_staff = 0;
     for (size_t w = 0; w < num_workers; w++) {
-        lod0.insert(lod0.end(), lod0_chunks[w].data.begin(), lod0_chunks[w].data.end());
-        lod1.insert(lod1.end(), lod1_chunks[w].data.begin(), lod1_chunks[w].data.end());
-        lod2.insert(lod2.end(), lod2_chunks[w].data.begin(), lod2_chunks[w].data.end());
+        total_lod0 += lod0_chunks[w].count;
+        total_lod1 += lod1_chunks[w].count;
+        total_lod2 += lod2_chunks[w].count;
+        total_staff += staff_chunks[w].count;
+    }
+    // 2. Resize eenmalig. Zonder voorafgaande clear() krimpt de vector gratis,
+    // en bij groei initialiseert hij alléén het verschil.
+    lod0.resize(total_lod0);
+    lod1.resize(total_lod1);
+    lod2.resize(total_lod2);
+    staff_transforms.resize(total_staff);
+    
+    // 3. Kopieer de data direct naar de juiste offset
+    size_t offset0 = 0, offset1 = 0, offset2 = 0, offset_staff = 0;
+    for (size_t w = 0; w < num_workers; w++) {
+        if(lod0_chunks[w].count > 0) {
+            std::memcpy(&lod0[offset0], lod0_chunks[w].data.data(), lod0_chunks[w].count * sizeof(glm::mat4));
+            offset0 += lod0_chunks[w].count;
+        }
+        if(lod1_chunks[w].count > 0) {
+            std::memcpy(&lod1[offset1], lod1_chunks[w].data.data(), lod1_chunks[w].count * sizeof(glm::mat4));
+            offset1 += lod1_chunks[w].count;
+        }
+        if(lod2_chunks[w].count > 0) {
+            std::memcpy(&lod2[offset2], lod2_chunks[w].data.data(), lod2_chunks[w].count * sizeof(glm::mat4));
+            offset2 += lod2_chunks[w].count;
+        }
+        if(staff_chunks[w].count > 0) {
+            std::memcpy(&staff_transforms[offset_staff], staff_chunks[w].data.data(), staff_chunks[w].count * sizeof(glm::mat4));
+            offset_staff += staff_chunks[w].count;
+        }
     }
     
-    staff_transforms.resize(staves.size());
-    
-    for (size_t idx = 0; idx < staves.size(); ++idx)
-    {
-        staff_transforms[idx] = staves[idx].get_transform_matrix();
-    }
-    
-    // --- RENDER CALLS ---
     if (!lod0.empty()) renderer->draw_batch("frieren-blob", "frieren-blob", lod0);
     if (!lod1.empty()) renderer->draw_batch("frieren-lod1", "frieren-blob", lod1);
     if (!lod2.empty()) renderer->draw_batch("frieren-lod2", "frieren-blob", lod2);
+    
     if (!staff_transforms.empty()) renderer->draw_batch("staff", "staff", staff_transforms);
         
-    terrain->draw(renderer);
+    terrain->draw(renderer, cam_pos);
         
     for (const auto& lightning : active_lightning) { lightning.register_draw(lightning_sprite_manager); }
     lightning_sprite_manager.draw(renderer);
@@ -453,16 +454,11 @@ void Scene::draw()
     }
 }
     
-    
-/// <summary>
-/// Sorts all health values and displays them in a window.
-/// </summary>
 void Scene::show_health_values() const
 {
     std::vector<int> health_values;
     health_values.reserve(hero_system.size());
 
-    // Alleen de actieve health waarden opslaan
     for (size_t i = 0; i < hero_system.size(); i++) {
         if (hero_system.active[i]) {
             health_values.push_back(hero_system.health[i]);
@@ -485,15 +481,11 @@ void Scene::show_health_values() const
     ImGui::End();
 }
 
-/// <summary>
-/// Sorts all mana values and displays them in a window.
-/// </summary>
 void Scene::show_mana_values() const
 {
     std::vector<int> mana_values;
     mana_values.reserve(hero_system.size()); 
 
-    // Alleen de actieve mana waarden opslaan
     for (size_t i = 0; i < hero_system.size(); i++) {
         if (hero_system.active[i]) {
             mana_values.push_back(hero_system.mana[i]);
@@ -526,23 +518,16 @@ void Scene::sort(std::vector<int>& arr) const
 
 void Scene::quicksort(std::vector<int>& arr, int low, int high) const
 {
-    // als bereik leeg of 1 element bevat, is al gesorteerd
     if (low >= high) return;
 
-    // kies pivot-element (midden van bereik)
     int pivot = arr[(low + high) / 2];
     int left = low, right = high;
 
-    // verplaats elementen zodat kleinere links en grotere rechts van pivot komen
     while (left <= right)
     {
-        // zoek van links naar rechts eerste element dat groter is dan pivot
         while (arr[left] < pivot) left++;
-
-        // zoek van rechts naar links eerste element dat kleiner is dan pivot
         while (arr[right] > pivot) right--;
 
-        // als left en right nog niet gekruist zijn, wissel elementen om
         if (left <= right)
         {
             std::swap(arr[left], arr[right]);
@@ -551,9 +536,8 @@ void Scene::quicksort(std::vector<int>& arr, int low, int high) const
         }
     }
 
-    // sorteer de twee deelarrays recursief
-    quicksort(arr, low, right);  // linkerhelft (alle waarden < pivot)
-    quicksort(arr, left, high);  // rechterhelft (alle waarden > pivot)
+    quicksort(arr, low, right);  
+    quicksort(arr, left, high);  
 }
 
 void Scene::handle_input(const float delta_time)
@@ -564,12 +548,10 @@ void Scene::handle_input(const float delta_time)
     }
     f1_was_pressed = f1_pressed;
 
-    //Toggle follow mode
     if (glfwGetKey(renderer->get_window(), GLFW_KEY_TAB) == GLFW_PRESS) { follow_mode = !follow_mode; }
 
     if (!follow_mode)
     {
-        //Update camera on key presses
         if (glfwGetKey(renderer->get_window(), GLFW_KEY_W) == GLFW_PRESS) { camera.move_forward(delta_time); }
         if (glfwGetKey(renderer->get_window(), GLFW_KEY_S) == GLFW_PRESS) { camera.move_backward(delta_time); }
         if (glfwGetKey(renderer->get_window(), GLFW_KEY_Q) == GLFW_PRESS) { camera.move_left(delta_time); }
@@ -588,12 +570,10 @@ void Scene::handle_input(const float delta_time)
         mouse_offset.x *= delta_time;
         mouse_offset.y *= delta_time;
 
-        //Only move the camera using the mouse when shift is pressed
         if (glfwGetKey(renderer->get_window(), GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
         {
             camera.update_direction(mouse_offset);
         }
-
     }
 }
 
@@ -601,11 +581,9 @@ void Scene::show_controls()
 {
     ImGui::Begin("Camera Controls Guide");
 
-    // Follow Mode Toggle
     ImGui::Text("Follow Mode: %s", follow_mode ? "Enabled" : "Disabled");
     ImGui::Separator();
 
-    // Movement Controls
     ImGui::Text("Movement Controls (When Follow Mode is Disabled):");
     ImGui::BulletText("[W] - Move Forward");
     ImGui::BulletText("[S] - Move Backward");
@@ -618,13 +596,11 @@ void Scene::show_controls()
 
     ImGui::Separator();
 
-    // Mouse Controls
     ImGui::Text("Mouse Controls:");
     ImGui::BulletText("[Mouse + SHIFT] - Look Around");
 
     ImGui::Separator();
 
-    // Additional Info
     ImGui::Text("Current Mouse Position:");
     ImGui::Text("X: %.2f, Y: %.2f", prev_mouse_pos.x, prev_mouse_pos.y);
 
@@ -637,8 +613,6 @@ void Scene::show_controls()
     ImGui::Text("X: %.2f, Y: %.2f, Z: %.2f", camera_dir.x, camera_dir.y, camera_dir.z);
 
     ImGui::Separator();
-
     ImGui::Text("Toggle Follow Mode: [TAB]");
-
     ImGui::End();
 }

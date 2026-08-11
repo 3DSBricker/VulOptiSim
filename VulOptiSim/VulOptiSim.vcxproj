@@ -77,7 +77,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\gtest;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\VulVoxRenderer\VulkanMemoryAllocator-3.1.0\include;$(SolutionDir)includes\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -111,7 +111,7 @@
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\gtest;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)includes\glfw-3.4\WIN64\include;$(SolutionDir)includes\glm;$(SolutionDir)includes\gtest;$(SolutionDir)includes\VulVoxRenderer\include;$(SolutionDir)includes\stb-image;$(SolutionDir)includes\VulVoxRenderer\VulkanMemoryAllocator-3.1.0\include;$(SolutionDir)includes\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions></AdditionalOptions>
     </ClCompile>
     <Link>

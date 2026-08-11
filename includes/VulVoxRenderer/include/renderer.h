@@ -4,10 +4,10 @@
 #include "frame_statistics.h"
 #include "renderer_configuration.h"
 #include "vertex.h"
+#include "vulkan_engine.h"
 
 namespace vulvox
 {
-    using StaticInstanceHandle = uint32_t;
     class Vulkan_Engine; //Forward declaration for pimpl
 
     class Renderer
@@ -60,8 +60,8 @@ namespace vulvox
             // afhankelijk van hoe jouw buffer_manager geheugen beheert.
         };
         
-        uint32_t register_static_instances(const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
-        void draw_static_instanced(const std::string& model_name, const std::string& texture_array_name, uint32_t handle);
+        uint32_t register_static_instances(const std::vector<Vulkan_Engine::TerrainInstanceData>& instance_data);
+        void draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle);
         
         void draw_model(const std::string& model_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix);
