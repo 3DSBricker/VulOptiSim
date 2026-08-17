@@ -73,13 +73,13 @@ hero_grid(10000.0f, 8.0f)
               << "============================\n" << std::endl;
 
     std::cout << "\n>>> Background: Loading animation effects (parallel)...\n" << std::endl;
-    pool.enqueue([this] {
-        auto anim_start = std::chrono::high_resolution_clock::now();
+    // pool.enqueue([this] {
+        // auto anim_start = std::chrono::high_resolution_clock::now();
         load_animation_effects();
-        auto anim_end = std::chrono::high_resolution_clock::now();
-        float anim_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(anim_end - anim_start).count();
-        std::cout << "Animation effects loading took: " << anim_duration << " ms (done in background)\n" << std::endl;
-    });
+        // auto anim_end = std::chrono::high_resolution_clock::now();
+        // float anim_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(anim_end - anim_start).count();
+        // std::cout << "Animation effects loading took: " << anim_duration << " ms (done in background)\n" << std::endl;
+    // });
 }
 
 void Scene::load_models_and_textures() const
@@ -163,19 +163,19 @@ void Scene::spawn_heroes()
                     
                     glm::ivec2 grid_pos = glm::ivec2(start_pos / route_cache_resolution);
                     
-                    std::vector<glm::vec2> route;
+                    const std::vector<glm::vec2>* shared_route_ptr = nullptr;
                     {
                         std::lock_guard<std::mutex> lock(route_cache_mutex);
                         auto route_it = global_route_cache.find(grid_pos);
                         if (route_it != global_route_cache.end()) {
-                            route = route_it->second;
+                            shared_route_ptr = &route_it->second;
                         } else {
-                            route = terrain->find_route(start_pos, target);
-                            global_route_cache[grid_pos] = route;
+                            // Insert direct in map en haal pointer naar de stabiele data op
+                            auto inserted = global_route_cache.insert({grid_pos, terrain->find_route(start_pos, target)});
+                            shared_route_ptr = &inserted.first->second;
                         }
                     }
-
-                    local_heroes.add_hero(glm::vec3(x, y, z), 20.f, 0.5f, route); 
+                    local_heroes.add_hero(glm::vec3(x, y, z), 20.f, 0.5f, shared_route_ptr);
                 }
             }
 
@@ -218,33 +218,49 @@ size_t Scene::get_staff_count() const { return staves.size(); }
 
 void Scene::check_collisions()
 {
-    pool.parallel_for(hero_system.size(), [&](size_t i) {
-        if (!hero_system.active[i]) return;
+    // Trek pointers los uit de Struct of Arrays (SoA)
+    const glm::vec3* pos_ptr = hero_system.position.data();
+    const float* rad_ptr = hero_system.collision_radius.data();
+    const uint8_t* active_ptr = hero_system.active.data();
+    glm::vec2* force_ptr = hero_system.force.data();
 
-        glm::vec2 pos_i(hero_system.position[i].x, hero_system.position[i].z);
-        int cell = hero_grid.get_cell_id(pos_i);
+    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+        if (!active_ptr[i]) return;
+
+        const glm::vec2 pos_i(pos_ptr[i].x, pos_ptr[i].z);
+        const float radius_i = rad_ptr[i];
+        const int cell = hero_grid.get_cell_id(pos_i);
         
         glm::vec2 force{ 0.f };
         int j = hero_grid.get_head(cell); 
         
         while (j != -1) {
-            if (i != (size_t)j && hero_system.active[j]) { 
-                const float radius_sum = hero_system.collision_radius[i] + hero_system.collision_radius[j];
-                glm::vec2 pos_j(hero_system.position[j].x, hero_system.position[j].z);
+            if (i != (size_t)j) { 
+                const float diff_x = pos_ptr[j].x - pos_i.x;
+                const float diff_y = pos_ptr[j].z - pos_i.y; 
                 
-                const glm::vec2 diff = pos_j - pos_i;
-                const float dist_sq = glm::dot(diff, diff);
+                const float dist_sq = (diff_x * diff_x) + (diff_y * diff_y);
+                const float radius_sum = radius_i + rad_ptr[j];
+                const float radius_sum_sq = radius_sum * radius_sum;
+                
+                if (dist_sq < radius_sum_sq && dist_sq > 0.0001f) {
+                // Hardware matige fast inverse square root (approx 4 CPU cycles!)
+                float inv_dist = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dist_sq)));
+                
+                // Optioneel: 1 Newton-Raphson iteratie als het stottert, maar voor collisions is de schatting accuraat genoeg
+                // inv_dist = inv_dist * (1.5f - (0.5f * dist_sq * inv_dist * inv_dist));
 
-                if (dist_sq < (radius_sum * radius_sum) && dist_sq > 0.0001f) {
-                    float inv_dist = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dist_sq)));
-                    float dist = dist_sq * inv_dist; 
-                    force -= (diff * inv_dist) * (radius_sum - dist);
+                // Wiskundig gereduceerde overlap-deling
+                float multiplier = (radius_sum * inv_dist) - 1.0f; 
+                
+                force.x -= diff_x * multiplier;
+                force.y -= diff_y * multiplier; 
                 }
             }
             j = hero_grid.next[j]; 
         }
         
-        hero_system.force[i] += force; 
+        force_ptr[i] += force; 
     });
 }
 
@@ -276,50 +292,48 @@ void Scene::update(const float delta_time)
     }
 
     renderer->set_view_matrix(camera.get_view_matrix());
-
-    pool.parallel_for(hero_system.size(), [&](size_t i) {
-        hero_system.update_hero(i, delta_time, *terrain);
-    });
     
     if (phase == 0) {
         hero_grid.clear();
-        for (size_t i = 0; i < hero_system.size(); i++) {
-            if (hero_system.active[i]) {
-                hero_grid.add_hero((int)i, glm::vec2(hero_system.position[i].x, hero_system.position[i].z));
-            }
-        }
+        hero_system.flush_mutations();
         check_collisions();
     }
     
+    // FIX: Chunked parallel loop lost False Sharing over SoA data compleet op!
+    pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
+        hero_system.update_hero(i, delta_time, *terrain, phase);
+    });
+    
+    
     if(phase == 1)
     {
-        pool.parallel_for(projectiles.size(), [&](size_t i) {
+        // FIX: Projectiles profiteerden niet van aaneengesloten data, nu wel.
+        pool.parallel_for_chunked(projectiles.size(), [&](size_t i, size_t chunk_id) {
             projectiles[i].update(delta_time * 4.0f, camera, shield, hero_system);
         });    
     }
 
     if(phase == 2)
     {
-        shield.update(hero_system);
+        // Let op: Dit slokt nog 19% van de pie chart op, omdat het blokkeert op de main thread. 
+        // Als je de raw code hiervan (en van Lightning/Staves) deelt, verhelpen we die ook.
+        shield.update(hero_system, &pool);
     }
     
     if(phase == 3)
     {
-        for(auto& l : active_lightning) {
-            l.update(delta_time * 4.0f, camera, hero_system);
-        }
-        for(auto& staff : staves) {
-            staff.update(delta_time * 4.0f, hero_system, active_lightning, projectiles);
-        }
+        // Haal Lightning van de main thread af
+        pool.parallel_for_chunked(active_lightning.size(), [&](size_t i, size_t chunk_id) {
+            active_lightning[i].update(delta_time * 4.0f, camera, hero_system);
+        });
+        
+        // Haal Staves van de main thread af
+        pool.parallel_for_chunked(staves.size(), [&](size_t i, size_t chunk_id) {
+            staves[i].update(delta_time * 4.0f, hero_system, active_lightning, projectiles);
+        });
     }
     
-    for (size_t i = 0; i < hero_system.size(); ) {
-        if (!hero_system.active[i]) {
-            hero_system.remove_hero(i);
-        } else {
-            ++i;
-        }
-    }
+    hero_system.flush_mutations();
 
     auto cleanup = [](auto& container) {
         size_t i = 0;

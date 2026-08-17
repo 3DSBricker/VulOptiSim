@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "shield.h"
+#include "thread_pool.h"
+
 
 Shield::Shield(const std::string& texture_array_name)
     : texture_name(texture_array_name)
@@ -7,56 +9,196 @@ Shield::Shield(const std::string& texture_array_name)
 
 }
 
-void Shield::update(const HeroSystem& hero_system)
-{
-    //Gather all hero positions if they have mana left
-    std::vector<glm::vec3> points;
-    // Haal posities rechtstreeks uit de parallelle array
-    for (size_t i = 0; i < hero_system.size(); ++i)
-    {
-        if (hero_system.mana[i] > 0 && hero_system.active[i])
-        {
-            points.emplace_back(hero_system.position[i]);
-        }
-    }
+struct ExtremaChunk {
+    glm::vec2 p_min_x{FLT_MAX, 0}, p_max_x{-FLT_MAX, 0};
+    glm::vec2 p_min_y{0, FLT_MAX}, p_max_y{0, -FLT_MAX};
+    glm::vec2 p_min_sum{0, 0}, p_max_sum{0, 0};
+    glm::vec2 p_min_diff{0, 0}, p_max_diff{0, 0};
+    float min_sum_val = FLT_MAX, max_sum_val = -FLT_MAX;
+    float min_diff_val = FLT_MAX, max_diff_val = -FLT_MAX;
+    float lowest_point = FLT_MAX, highest_point = -FLT_MAX;
+    glm::vec2 min_bounds{FLT_MAX};
+    glm::vec2 max_bounds{-FLT_MAX};
+    bool has_points = false;
+};
 
-    if (points.empty())
-    {
+void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
+{
+    const size_t count = hero_system.size();
+    if (count == 0) {
+        convex_hull_points.clear();
         return;
     }
 
-    std::vector<glm::vec2> points_2d{};
-    points_2d.reserve(points.size() * 4);
+    const uint8_t* active_ptr = hero_system.active.data();
+    const int* mana_ptr = hero_system.mana.data();
+    const glm::vec3* pos_ptr = hero_system.position.data();
 
-    float lowest_point = points[0].y;
-    float highest_point = points[0].y;
-    for (auto& p : points)
-    {
-        //convert to 2d: 3d y-axis points up, so use z
-        //create square around point, this way the shield fits around the character nicely
-        points_2d.emplace_back(p.x + .5f, p.z + .5f);
-        points_2d.emplace_back(p.x + .5f, p.z - .5f);
-        points_2d.emplace_back(p.x - .5f, p.z + .5f);
-        points_2d.emplace_back(p.x - .5f, p.z - .5f);
+    ExtremaChunk global_extrema;
 
-        if (p.y < lowest_point)
-        {
-            lowest_point = p.y;
+    if (pool && count > 1000) {
+        size_t thread_count = pool->thread_count();
+        std::vector<ExtremaChunk> chunks(thread_count);
+
+        pool->parallel_for_chunked(count, [&](size_t i, size_t chunk_id) {
+            if (active_ptr[i] && mana_ptr[i] > 0) {
+                auto& c = chunks[chunk_id];
+                c.has_points = true;
+                glm::vec2 p(pos_ptr[i].x, pos_ptr[i].z);
+                float sum = p.x + p.y;
+                float diff = p.x - p.y;
+                float y = pos_ptr[i].y;
+
+                if (p.x < c.p_min_x.x) c.p_min_x = p;
+                if (p.x > c.p_max_x.x) c.p_max_x = p;
+                if (p.y < c.p_min_y.y) c.p_min_y = p;
+                if (p.y > c.p_max_y.y) c.p_max_y = p;
+                
+                if (sum < c.min_sum_val) { c.min_sum_val = sum; c.p_min_sum = p; }
+                if (sum > c.max_sum_val) { c.max_sum_val = sum; c.p_max_sum = p; }
+                
+                if (diff < c.min_diff_val) { c.min_diff_val = diff; c.p_min_diff = p; }
+                if (diff > c.max_diff_val) { c.max_diff_val = diff; c.p_max_diff = p; }
+
+                if (p.x < c.min_bounds.x) c.min_bounds.x = p.x;
+                if (p.x > c.max_bounds.x) c.max_bounds.x = p.x;
+                if (p.y < c.min_bounds.y) c.min_bounds.y = p.y;
+                if (p.y > c.max_bounds.y) c.max_bounds.y = p.y;
+
+                if (y < c.lowest_point) c.lowest_point = y;
+                if (y > c.highest_point) c.highest_point = y;
+            }
+        });
+
+        // Merge de resultaten van alle threads
+        for (const auto& c : chunks) {
+            if (!c.has_points) continue;
+            global_extrema.has_points = true;
+            if (c.p_min_x.x < global_extrema.p_min_x.x) global_extrema.p_min_x = c.p_min_x;
+            if (c.p_max_x.x > global_extrema.p_max_x.x) global_extrema.p_max_x = c.p_max_x;
+            if (c.p_min_y.y < global_extrema.p_min_y.y) global_extrema.p_min_y = c.p_min_y;
+            if (c.p_max_y.y > global_extrema.p_max_y.y) global_extrema.p_max_y = c.p_max_y;
+
+            if (c.min_sum_val < global_extrema.min_sum_val) { global_extrema.min_sum_val = c.min_sum_val; global_extrema.p_min_sum = c.p_min_sum; }
+            if (c.max_sum_val > global_extrema.max_sum_val) { global_extrema.max_sum_val = c.max_sum_val; global_extrema.p_max_sum = c.p_max_sum; }
+            if (c.min_diff_val < global_extrema.min_diff_val) { global_extrema.min_diff_val = c.min_diff_val; global_extrema.p_min_diff = c.p_min_diff; }
+            if (c.max_diff_val > global_extrema.max_diff_val) { global_extrema.max_diff_val = c.max_diff_val; global_extrema.p_max_diff = c.p_max_diff; }
+
+            if (c.min_bounds.x < global_extrema.min_bounds.x) global_extrema.min_bounds.x = c.min_bounds.x;
+            if (c.max_bounds.x > global_extrema.max_bounds.x) global_extrema.max_bounds.x = c.max_bounds.x;
+            if (c.min_bounds.y < global_extrema.min_bounds.y) global_extrema.min_bounds.y = c.min_bounds.y;
+            if (c.max_bounds.y > global_extrema.max_bounds.y) global_extrema.max_bounds.y = c.max_bounds.y;
+
+            if (c.lowest_point < global_extrema.lowest_point) global_extrema.lowest_point = c.lowest_point;
+            if (c.highest_point > global_extrema.highest_point) global_extrema.highest_point = c.highest_point;
         }
+    } else {
+        // Seriële fallback
+        for (size_t i = 0; i < count; ++i) {
+            if (active_ptr[i] && mana_ptr[i] > 0) {
+                global_extrema.has_points = true;
+                glm::vec2 p(pos_ptr[i].x, pos_ptr[i].z);
+                float sum = p.x + p.y;
+                float diff = p.x - p.y;
+                float y = pos_ptr[i].y;
 
-        if (p.y > highest_point)
-        {
-            highest_point = p.y;
+                if (p.x < global_extrema.p_min_x.x) global_extrema.p_min_x = p;
+                if (p.x > global_extrema.p_max_x.x) global_extrema.p_max_x = p;
+                if (p.y < global_extrema.p_min_y.y) global_extrema.p_min_y = p;
+                if (p.y > global_extrema.p_max_y.y) global_extrema.p_max_y = p;
+                
+                if (sum < global_extrema.min_sum_val) { global_extrema.min_sum_val = sum; global_extrema.p_min_sum = p; }
+                if (sum > global_extrema.max_sum_val) { global_extrema.max_sum_val = sum; global_extrema.p_max_sum = p; }
+                if (diff < global_extrema.min_diff_val) { global_extrema.min_diff_val = diff; global_extrema.p_min_diff = p; }
+                if (diff > global_extrema.max_diff_val) { global_extrema.max_diff_val = diff; global_extrema.p_max_diff = p; }
+
+                if (p.x < global_extrema.min_bounds.x) global_extrema.min_bounds.x = p.x;
+                if (p.x > global_extrema.max_bounds.x) global_extrema.max_bounds.x = p.x;
+                if (p.y < global_extrema.min_bounds.y) global_extrema.min_bounds.y = p.y;
+                if (p.y > global_extrema.max_bounds.y) global_extrema.max_bounds.y = p.y;
+
+                if (y < global_extrema.lowest_point) global_extrema.lowest_point = y;
+                if (y > global_extrema.highest_point) global_extrema.highest_point = y;
+            }
         }
     }
 
-    min_height = lowest_point;
-    max_height = highest_point;
+    if (!global_extrema.has_points) {
+        convex_hull_points.clear();
+        return;
+    }
 
-    convex_hull_points = convex_hull(points_2d);
+    min_height = global_extrema.lowest_point;
+    max_height = global_extrema.highest_point;
+    min_bounds = global_extrema.min_bounds;
+    max_bounds = global_extrema.max_bounds;
 
-    //Make the shield a bit larger so it doesn't clip the heroes
-    grow_from_centroid();
+    std::vector<glm::vec2> extreme_points;
+    extreme_points.reserve(8);
+    auto add_unique = [&](const glm::vec2& pt) {
+        for (const auto& existing : extreme_points) {
+            if (glm::abs(existing.x - pt.x) < 0.1f && glm::abs(existing.y - pt.y) < 0.1f) return;
+        }
+        extreme_points.push_back(pt);
+    };
+
+    add_unique(global_extrema.p_min_x); add_unique(global_extrema.p_max_x);
+    add_unique(global_extrema.p_min_y); add_unique(global_extrema.p_max_y);
+    add_unique(global_extrema.p_min_sum); add_unique(global_extrema.p_max_sum);
+    add_unique(global_extrema.p_min_diff); add_unique(global_extrema.p_max_diff);
+
+    convex_hull_points = convex_hull(extreme_points);
+
+    if (convex_hull_points.size() > 1) {
+        grow_from_centroid();
+    }
+
+    min_bounds -= glm::vec2(2.f);
+    max_bounds += glm::vec2(2.f);
+}
+
+
+std::vector<glm::vec2> Shield::convex_hull(std::vector<glm::vec2> all_points) const
+{
+    if (all_points.size() <= 3) return all_points;
+
+    // 1. Sorteren is VERPLICHT voor een efficiënte hull en maakt deduplicatie mogelijk
+    std::sort(all_points.begin(), all_points.end(), [](const glm::vec2& a, const glm::vec2& b) {
+        return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+
+    // 2. Verwijder echte duplicates nu de array gesorteerd is (std::unique werkt nu correct)
+    all_points.erase(std::unique(all_points.begin(), all_points.end(), [](const glm::vec2& a, const glm::vec2& b) {
+        return glm::abs(a.x - b.x) < 0.001f && glm::abs(a.y - b.y) < 0.001f;
+    }), all_points.end());
+
+    // 3. Monotone Chain Algorithm
+    std::vector<glm::vec2> hull;
+    hull.reserve(all_points.size());
+
+    auto cross = [](const glm::vec2& o, const glm::vec2& a, const glm::vec2& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+
+    // Lower hull
+    for (const auto& pt : all_points) {
+        while (hull.size() >= 2 && cross(hull[hull.size() - 2], hull.back(), pt) <= 0.0f) {
+            hull.pop_back();
+        }
+        hull.push_back(pt);
+    }
+
+    // Upper hull
+    size_t t = hull.size() + 1;
+    for (auto it = all_points.rbegin() + 1; it != all_points.rend(); ++it) {
+        while (hull.size() >= t && cross(hull[hull.size() - 2], hull.back(), *it) <= 0.0f) {
+            hull.pop_back();
+        }
+        hull.push_back(*it);
+    }
+
+    hull.pop_back(); // Verwijder het laatste stipje omdat dit een kopie van het eerste is
+    return hull;
 }
 
 void Shield::draw(vulvox::Renderer* renderer) const
@@ -110,86 +252,34 @@ void Shield::draw(vulvox::Renderer* renderer) const
     renderer->draw_planes(texture_name, transforms, texture_indices, uvs);
 }
 
-std::vector<glm::vec2> Shield::convex_hull(std::vector<glm::vec2> all_points) const
-{
-    all_points.erase(std::ranges::unique(all_points, [](const glm::vec2& a, const glm::vec2& b)
-        {
-            //To prevent float rounding errors use epsilon (removes points nearly on top of each other)
-            return glm::abs(a.x - b.x) < 0.001f && glm::abs(a.y - b.y) < 0.001f;
-        }).begin(), all_points.end());
-
-    glm::vec2 point_on_hull = all_points.at(0);
-
-    //Find left most position, when equal, select lowest y
-    for (const glm::vec2& point : all_points)
-    {
-        if (point.x < point_on_hull.x || (point.x == point_on_hull.x && point.y < point_on_hull.y))
-        {
-            point_on_hull = point;
-        }
-    }
-
-    std::vector<glm::vec2> forcefield_hull;
-
-    while (true)
-    {
-        //Add last found point
-        forcefield_hull.push_back(point_on_hull);
-
-        //Loop through all points replacing the endpoint with the current iteration every time 
-        //it lies left of the current segment formed by point_on_hull and the current endpoint.
-        //By the end we have a segment with no points on the left and thus a point on the convex hull.
-        glm::vec2 endpoint = all_points.at(0);
-        for (const glm::vec2& point : all_points)
-        {
-            if ((endpoint == point_on_hull) || orientation(point_on_hull, endpoint, point) < 0.f)
-            {
-                endpoint = point;
-            }
-        }
-
-        //Set the starting point of the next segment to the found endpoint.
-        point_on_hull = endpoint;
-
-        //If we went all the way around we are done.
-        if (endpoint == forcefield_hull.at(0))
-        {
-            break;
-        }
-    }
-
-    return forcefield_hull;
-}
-
 bool Shield::intersects(const glm::vec2& circle_center, float radius) const
 {
-    if (convex_hull_points.size() < 2)
-    {
-        return false;
-    }
+    if (convex_hull_points.size() < 2) return false;
+
+    // Snelle Culling: Stop direct als het projectiel mijlenver weg is
+    if (circle_center.x + radius < min_bounds.x || circle_center.x - radius > max_bounds.x ||
+        circle_center.y + radius < min_bounds.y || circle_center.y - radius > max_bounds.y) {
+        return false; 
+        }
 
     for (size_t i = 0; i < convex_hull_points.size(); i++)
     {
-        //See: https://www.geogebra.org/calculator/ccfyg8bh
-
         glm::vec2 A = convex_hull_points[i];
         glm::vec2 B = convex_hull_points[(i + 1) % convex_hull_points.size()];
 
-        //Compute the closest point on segment AB to the circle's center
         glm::vec2 AB = B - A;
         float t = glm::dot(circle_center - A, AB) / glm::dot(AB, AB);
-        t = glm::clamp(t, 0.0f, 1.0f); //Clamp t to [0, 1] so we stay on the segment
+        t = glm::clamp(t, 0.0f, 1.0f); 
 
         glm::vec2 closest_point = A + t * AB;
+        glm::vec2 diff = circle_center - closest_point;
 
-        // Check if the closest point is within the circle
-        if (glm::distance2(circle_center, closest_point) <= radius * radius)
+        if ((diff.x * diff.x + diff.y * diff.y) <= (radius * radius))
         {
             return true;
         }
     }
-
-    return false; //No intersection
+    return false;
 }
 
 void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const

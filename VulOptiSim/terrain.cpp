@@ -53,7 +53,7 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
 
 void Terrain::initialize(vulvox::Renderer* renderer)
 {
-    std::cout << "TERRAIN INITIALIZE CHUNKS (Culling + Side-Face Generation)\n";
+    std::cout << "TERRAIN INITIALIZE CHUNKS (Fallback naar werkende Mat4 Draw Calls)\n";
     is_initialized = true;
 
     int chunks_x = (map_width + CHUNK_SIZE - 1) / CHUNK_SIZE;
@@ -64,23 +64,12 @@ void Terrain::initialize(vulvox::Renderer* renderer)
         if (tile.height < lowest) lowest = static_cast<int>(tile.height);
     }
 
-    enum FaceType {
-        FACE_TOP   = 0,
-        FACE_NORTH = 1, // +Z
-        FACE_SOUTH = 2, // -Z
-        FACE_EAST  = 3, // +X
-        FACE_WEST  = 4  // -X
-    };
-
-    // Helper om hoogte van een buur op te vragen (buiten de map = hoogte 0)
     auto get_neighbor_height = [&](int nx, int nz) -> int {
         if (nx >= 0 && nx < map_width && nz >= 0 && nz < map_length) {
             return map_data[get_tile_index(nx, nz)].height - lowest + 1;
         }
         return 0; 
     };
-
-    const int wall_texture_idx = 2; // Textuur index voor muren (bijv. steen/beton)
 
     for (int cz = 0; cz < chunks_z; cz++) {
         for (int cx = 0; cx < chunks_x; cx++) {
@@ -90,8 +79,10 @@ void Terrain::initialize(vulvox::Renderer* renderer)
             int end_x = std::min(start_x + CHUNK_SIZE, map_width);
             int end_z = std::min(start_z + CHUNK_SIZE, map_length);
 
-            std::vector<vulvox::Vulkan_Engine::TerrainInstanceData> chunk_instances;
-            chunk_instances.reserve(CHUNK_SIZE * CHUNK_SIZE * 5); // Max 1 top + 4 muren
+            TerrainChunk chunk;
+            // Beetje geheugen reserveren voorkomt dat vectoren traag worden
+            chunk.terrain_transforms.reserve(CHUNK_SIZE * CHUNK_SIZE * 2);
+            chunk.texture_indices.reserve(CHUNK_SIZE * CHUNK_SIZE * 2);
 
             for (int z = start_z; z < end_z; z++) {
                 for (int x = start_x; x < end_x; x++) {
@@ -105,86 +96,43 @@ void Terrain::initialize(vulvox::Renderer* renderer)
                     else if (tile.tile_type & 2) tex = 1;
                     else if (tile.tile_type & 4) tex = 2;
 
-                    // -------------------------------------------------------------
-                    // 1. TOP FACE (Horizontaal dak)
-                    // -------------------------------------------------------------
-                    vulvox::Vulkan_Engine::TerrainInstanceData top;
-                    top.position_tex = glm::vec4(
-                        x * tile_width + tile_width * 0.5f,
-                        h_curr * tile_height, 
-                        z * tile_length + tile_length * 0.5f,
-                        static_cast<float>(tex)
-                    );
-                    top.scale_pad = glm::vec4(tile_width, tile_height, tile_length, FACE_TOP);
-                    chunk_instances.push_back(top);
-
-                    // -------------------------------------------------------------
-                    // 2. SIDE FACES (Verticale Muren)
-                    // -------------------------------------------------------------
-                    
-                    // OOST ( +X )
-                    int h_east = get_neighbor_height(x + 1, z);
-                    if (h_curr > h_east) {
-                        float wall_h = (h_curr - h_east) * tile_height;
-                        float center_y = (h_east + h_curr) * 0.5f * tile_height;
-                        float center_x = (x + 1) * tile_width; // Precies op de rand tussen x en x+1
-                        float center_z = (z + 0.5f) * tile_length;
-
-                        vulvox::Vulkan_Engine::TerrainInstanceData wall;
-                        wall.position_tex = glm::vec4(center_x, center_y, center_z, static_cast<float>(wall_texture_idx));
-                        wall.scale_pad = glm::vec4(tile_width, wall_h, tile_length, FACE_EAST);
-                        chunk_instances.push_back(wall);
-                    }
-
-                    // WEST ( -X )
-                    int h_west = get_neighbor_height(x - 1, z);
-                    if (h_curr > h_west) {
-                        float wall_h = (h_curr - h_west) * tile_height;
-                        float center_y = (h_west + h_curr) * 0.5f * tile_height;
-                        float center_x = x * tile_width; // Precies op de rand van tegel x
-                        float center_z = (z + 0.5f) * tile_length;
-
-                        vulvox::Vulkan_Engine::TerrainInstanceData wall;
-                        wall.position_tex = glm::vec4(center_x, center_y, center_z, static_cast<float>(wall_texture_idx));
-                        wall.scale_pad = glm::vec4(tile_width, wall_h, tile_length, FACE_WEST);
-                        chunk_instances.push_back(wall);
-                    }
-
-                    // NOORD ( +Z )
+                    int h_east  = get_neighbor_height(x + 1, z);
+                    int h_west  = get_neighbor_height(x - 1, z);
                     int h_north = get_neighbor_height(x, z + 1);
-                    if (h_curr > h_north) {
-                        float wall_h = (h_curr - h_north) * tile_height;
-                        float center_y = (h_north + h_curr) * 0.5f * tile_height;
-                        float center_x = (x + 0.5f) * tile_width;
-                        float center_z = (z + 1) * tile_length; // Precies op de rand tussen z en z+1
-
-                        vulvox::Vulkan_Engine::TerrainInstanceData wall;
-                        wall.position_tex = glm::vec4(center_x, center_y, center_z, static_cast<float>(wall_texture_idx));
-                        wall.scale_pad = glm::vec4(tile_width, wall_h, tile_length, FACE_NORTH);
-                        chunk_instances.push_back(wall);
-                    }
-
-                    // ZUID ( -Z )
                     int h_south = get_neighbor_height(x, z - 1);
-                    if (h_curr > h_south) {
-                        float wall_h = (h_curr - h_south) * tile_height;
-                        float center_y = (h_south + h_curr) * 0.5f * tile_height;
-                        float center_x = (x + 0.5f) * tile_width;
-                        float center_z = z * tile_length; // Precies op de rand van tegel z
+                    
+                    int min_neighbor_h = std::min({h_east, h_west, h_north, h_south});
+                    int start_y = std::min(min_neighbor_h, h_curr - 1);
+                    start_y = std::max(0, start_y); 
+                    
+                    for (int y = start_y; y < h_curr; y++) {
+                        
+                        bool is_top = (y == h_curr - 1);
+                        bool exposed_east  = (y >= h_east);
+                        bool exposed_west  = (y >= h_west);
+                        bool exposed_north = (y >= h_north);
+                        bool exposed_south = (y >= h_south);
+                        
+                        // Enkel zichtbare blokjes toevoegen aan de transform lijst
+                        if (is_top || exposed_east || exposed_west || exposed_north || exposed_south) {
+                            
+                            glm::mat4 voxel_transform = glm::mat4(1.0f);
+                            voxel_transform = glm::translate(voxel_transform,
+                                glm::vec3(x * tile_width + tile_width / 2.0f,
+                                          ((float)y + 0.5f) * tile_height, 
+                                          z * tile_length + tile_length / 2.0f));
 
-                        vulvox::Vulkan_Engine::TerrainInstanceData wall;
-                        wall.position_tex = glm::vec4(center_x, center_y, center_z, static_cast<float>(wall_texture_idx));
-                        wall.scale_pad = glm::vec4(tile_width, wall_h, tile_length, FACE_SOUTH);
-                        chunk_instances.push_back(wall);
+                            voxel_transform = glm::scale(voxel_transform, glm::vec3(tile_width, tile_height, tile_length));
+
+                            chunk.terrain_transforms.push_back(voxel_transform);
+                            chunk.texture_indices.push_back(tex);
+                        }
                     }
                 }
             }
 
-            if (chunk_instances.empty()) continue;
+            if (chunk.terrain_transforms.empty()) continue;
 
-            TerrainChunk chunk;
-            chunk.gpu_handle = renderer->register_static_instances(chunk_instances);
-            
             float mid_x = (start_x + (end_x - start_x) * 0.5f) * tile_width;
             float mid_z = (start_z + (end_z - start_z) * 0.5f) * tile_length;
             chunk.center = glm::vec2(mid_x, mid_z);
@@ -201,19 +149,59 @@ void Terrain::draw(vulvox::Renderer* renderer, const glm::vec3& camera_position)
     float render_distance = 2500.0f; 
     glm::vec2 cam_pos_2d(camera_position.x, camera_position.z);
 
-    for (const auto& chunk : chunks) {
-        if (chunk.is_empty) continue;
+    // Lijst met indices van chunks die op dit moment zichtbaar zijn
+    std::vector<size_t> current_visible_chunks;
+    current_visible_chunks.reserve(chunks.size());
 
-        // Snelle culling zonder glm::distance / sqrt
-        float dx = cam_pos_2d.x - chunk.center.x;
-        float dy = cam_pos_2d.y - chunk.center.y;
+    for (size_t i = 0; i < chunks.size(); i++) {
+        if (chunks[i].is_empty) continue;
+
+        // Snelle culling check met floats
+        float dx = cam_pos_2d.x - chunks[i].center.x;
+        float dy = cam_pos_2d.y - chunks[i].center.y;
         float dist_sq = (dx * dx) + (dy * dy);
         
-        float cull_dist = render_distance + chunk.radius;
+        float cull_dist = render_distance + chunks[i].radius;
 
         if (dist_sq < (cull_dist * cull_dist)) {
-            renderer->draw_static_instanced("texture_array_test", chunk.gpu_handle);
+            current_visible_chunks.push_back(i);
         }
+    }
+
+    // Is de lijst met zichtbare chunks veranderd t.o.v. de vorige frame?
+    // Zo niet, dan slaat de CPU dit zware datageschuif volledig over!
+    if (current_visible_chunks != last_visible_chunks) {
+        
+        cached_visible_transforms.clear();
+        cached_visible_texture_indices.clear();
+        
+        // Zorg dat we niet tig keer opnieuw alloceren als de vector groeit
+        cached_visible_transforms.reserve(25000);
+        cached_visible_texture_indices.reserve(25000);
+
+        for (size_t idx : current_visible_chunks) {
+            cached_visible_transforms.insert(
+                cached_visible_transforms.end(), 
+                chunks[idx].terrain_transforms.begin(), 
+                chunks[idx].terrain_transforms.end()
+            );
+            cached_visible_texture_indices.insert(
+                cached_visible_texture_indices.end(), 
+                chunks[idx].texture_indices.begin(), 
+                chunks[idx].texture_indices.end()
+            );
+        }
+        
+        // Update de cache referentie voor de volgende frames
+        last_visible_chunks = current_visible_chunks;
+    }
+
+    // Exact 1 call naar de externe lib met de (nu gecachete) samengevoegde vectoren
+    if (!cached_visible_transforms.empty()) {
+        renderer->draw_instanced_with_texture_array(
+            "cube", "texture_array_test", 
+            cached_visible_transforms, cached_visible_texture_indices
+        );
     }
 }
 
@@ -332,7 +320,6 @@ std::vector<glm::vec2> Terrain::find_route(const glm::vec2& start_position, cons
     std::priority_queue<SearchNode> open_set;
     open_set.push({ start_tile, 0.f, heuristic(start_tile, target_tile) });
 
-    // FIX: Gebruik map_width * map_length (geen enorme terrain_width allocatie meer!)
     std::vector<bool> visited(map_width * map_length, false);
     std::unordered_map<glm::ivec2, glm::ivec2, IVec2Hash> parents;
 

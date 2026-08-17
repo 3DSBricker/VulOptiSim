@@ -25,9 +25,7 @@ namespace vulvox
     // Zet dit bovenaan je Vulkan_Engine.h (buiten de class, of als private struct)
     struct StaticInstanceGroup {
         VkBuffer matrix_buffer = VK_NULL_HANDLE;
-        VmaAllocation matrix_allocation = VK_NULL_HANDLE; // We gaan uit van VMA op basis van je code
-        VkBuffer index_buffer = VK_NULL_HANDLE;
-        VmaAllocation index_allocation = VK_NULL_HANDLE;
+        VmaAllocation matrix_allocation = VK_NULL_HANDLE;
         uint32_t instance_count = 0;
     };
     
@@ -50,7 +48,7 @@ namespace vulvox
         
         struct TerrainInstanceData {
             glm::vec4 position_tex; // x,y,z = wereldpositie | w = texture index
-            glm::vec4 scale_pad;    // x,y,z = schaal        | w = padding (0.0f)
+            glm::vec4 scale_pad;    // x,y,z = scale | w = padding
         };
 
         uint32_t register_static_instances(const std::vector<TerrainInstanceData>& instance_data);

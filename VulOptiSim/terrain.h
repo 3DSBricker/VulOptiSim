@@ -94,7 +94,10 @@ private:
     bool is_initialized = false;
     
     struct TerrainChunk {
-        vulvox::Vulkan_Engine::StaticInstanceHandle gpu_handle;
+        // Terug naar jouw werkende systeem! Geen gpu_handle meer.
+        std::vector<glm::mat4> terrain_transforms;
+        std::vector<uint32_t> texture_indices;
+        
         glm::vec2 center;       // Voor snelle afstand- of culling checks
         float radius;           // Bounding sphere radius van deze chunk
         bool is_empty = false;
@@ -119,4 +122,9 @@ private:
     inline int get_tile_index(const int x, const int y) const {
         return (y * map_width) + x;
     }
+    
+    // --- CPU CACHE ---
+    mutable std::vector<size_t> last_visible_chunks;
+    mutable std::vector<glm::mat4> cached_visible_transforms;
+    mutable std::vector<uint32_t> cached_visible_texture_indices;
 };

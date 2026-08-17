@@ -42,23 +42,33 @@ void Lightning::register_draw(Sprite_Manager<Lightning>& sprite_manager) const
 
 void Lightning::check_hits(HeroSystem& hero_system) const
 {
-    for (size_t i = 0; i < hero_system.size(); i++)
-    {
-        if (hero_system.active[i])
-        {
-            // AABB vs Cirkel collision wiskunde:
-            // Klem het midden van de held vast aan de randen van de rechthoek.
-            glm::vec2 hero_pos(hero_system.position[i].x, hero_system.position[i].z);
-            glm::vec2 clamped = glm::clamp(hero_pos, collision_box_min, collision_box_max);
-            
-            // Controleer of de afstand van de dichtstbijzijnde rand tot de kern kleiner is dan de radius
-            float distance_squared = glm::length2(clamped - hero_pos);
-            float r = hero_system.collision_radius[i];
+    const float min_x = collision_box_min.x;
+    const float min_z = collision_box_min.y;
+    const float max_x = collision_box_max.x;
+    const float max_z = collision_box_max.y;
 
-            if (distance_squared < (r * r))
-            {
-                hero_system.take_damage(i, damage_per_frame);
-            }
+    uint8_t* active_ptr = hero_system.active.data();
+    glm::vec3* pos_ptr = hero_system.position.data();
+    float* rad_ptr = hero_system.collision_radius.data();
+    const size_t count = hero_system.size();
+
+    for (size_t i = 0; i < count; i++)
+    {
+        if (!active_ptr[i]) continue;
+
+        const float hx = pos_ptr[i].x;
+        const float hz = pos_ptr[i].z;
+
+        const float clamped_x = (hx < min_x) ? min_x : (hx > max_x) ? max_x : hx;
+        const float clamped_z = (hz < min_z) ? min_z : (hz > max_z) ? max_z : hz;
+        
+        const float dx = clamped_x - hx;
+        const float dz = clamped_z - hz;
+        const float r = rad_ptr[i];
+
+        if ((dx * dx) + (dz * dz) < (r * r))
+        {
+            hero_system.take_damage(i, damage_per_frame);
         }
     }
 }

@@ -10,6 +10,6 @@ namespace vulvox
         // 128 MiB supports roughly one million matrices, or fewer instances when
         // texture-index and UV streams are also used.
         uint64_t instance_upload_arena_bytes = 128ull * 1024ull * 1024ull;
-        bool enable_back_face_culling = true;
+        bool enable_back_face_culling = false;
     };
 }

@@ -52,58 +52,62 @@ void Projectile::update(
     check_collisions(heroes);
 }
 
+
 void Projectile::check_collisions(HeroSystem& heroes)
 {
-    // Door alle actieve heroes itereren
-    for(size_t i = 0; i < heroes.size(); i++)
+    const float px = transform.position.x;
+    const float pz = transform.position.z;
+    uint32_t triggered = 0; // We gebruiken een integer voor branchless bitwise operaties
+
+    const uint8_t* active_ptr = heroes.active.data();
+    const glm::vec3* pos_ptr = heroes.position.data();
+    const float* rad_ptr = heroes.collision_radius.data();
+    const size_t count = heroes.size();
+
+    // GEEN 'break' of 'if' statements! MSVC /O2 en /fp:fast vectoriseert dit nu genadeloos.
+    for(size_t i = 0; i < count; i++)
     {
-        if(!heroes.active[i])
-            continue;
+        const float r = radius + rad_ptr[i];
+        const float dx = pos_ptr[i].x - px;
+        const float dz = pos_ptr[i].z - pz;
+        const float dist_sq = (dx * dx) + (dz * dz);
 
-        const glm::vec3& hp = heroes.position[i];
-        const float r = radius + heroes.collision_radius[i];
+        // Branchless hit detectie: als distance <= radius, wordt het een '1'. 
+        // Samen met de boolean van 'active', flippen we de triggered flag.
+        triggered |= (active_ptr[i] & (dist_sq <= (r * r)));
+    }
 
-        // 1. Snelle AABB check (Bounding Box)
-        if(std::abs(hp.x - transform.position.x) > r ||
-           std::abs(hp.z - transform.position.z) > r)
-        {
-            continue;
-        }
-
-        // 2. Precieze cirkel collision check (squared distance)
-        float dx = hp.x - transform.position.x;
-        float dz = hp.z - transform.position.z;
-        if((dx * dx + dz * dz) <= (r * r))
-        {
-            explode(heroes);
-            return;
-        }
+    if (triggered) {
+        explode(heroes);
     }
 }
 
 void Projectile::explode(HeroSystem& heroes)
 {
-    for (size_t i = 0; i < heroes.size(); i++)
+    const float px = transform.position.x;
+    const float pz = transform.position.z;
+
+    uint8_t* active_ptr = heroes.active.data();
+    glm::vec3* pos_ptr = heroes.position.data();
+    float* rad_ptr = heroes.collision_radius.data();
+    const size_t count = heroes.size();
+
+    for (size_t i = 0; i < count; i++)
     {
-        if (!heroes.active[i]) continue;
+        if (!active_ptr[i]) continue;
 
-        float r = explosion_radius + heroes.collision_radius[i];
-        float dx = heroes.position[i].x - transform.position.x;
-        float dz = heroes.position[i].z - transform.position.z;
+        const float r = explosion_radius + rad_ptr[i];
+        const float dx = pos_ptr[i].x - px;
+        const float dz = pos_ptr[i].z - pz;
 
-        // Als ze in de explosion radius zijn:
         if ((dx * dx + dz * dz) <= (r * r))
         {
-            // Ga ervan uit dat je dit in HeroSystem hebt, 
-            // of doe direct: heroes.health[i] -= damage;
             heroes.take_damage(i, damage); 
         }
     }
-
     active = false;
-
-    //TODO: Explode
 }
+
 
 void Projectile::register_draw(Sprite_Manager<Projectile>& sprite_manager) const
 {

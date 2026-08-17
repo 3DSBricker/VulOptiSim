@@ -9,7 +9,7 @@ public:
     Shield() = default;
     Shield(const std::string& texture_array_name);
 
-    void update(const HeroSystem& hero_system);
+    void update(const HeroSystem& hero_system, class ThreadPool* pool = nullptr);
 
     void draw(vulvox::Renderer* renderer) const;
 
@@ -22,6 +22,9 @@ private:
 
     glm::vec2 calculate_centroid();
     void grow_from_centroid();
+    
+    glm::vec2 min_bounds{0.f};
+    glm::vec2 max_bounds{0.f};
 
     int mana_cost = 100;
     int n_to_sustain = 10;
