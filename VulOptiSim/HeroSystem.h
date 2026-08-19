@@ -7,9 +7,14 @@
 #include <algorithm>
 #include <immintrin.h>
 
+#include "algo_utils.h"
+#include "math_utils.h"
+
 struct HeroSystem {
     // Parallelle component buffers (SoA)
-    std::vector<glm::vec3> position;
+    std::vector<float> pos_x;
+    std::vector<float> pos_y;
+    std::vector<float> pos_z;
     std::vector<glm::vec2> direction;
     std::vector<float> speed;
     std::vector<int> health;
@@ -21,11 +26,13 @@ struct HeroSystem {
     std::vector<int> route_index;
     std::vector<std::string> name;
 
-    size_t size() const { return position.size(); }
-    bool empty() const { return position.empty(); }
+    size_t size() const { return pos_x.size(); }
+    bool empty() const { return pos_x.empty(); }
 
     void add_hero(const glm::vec3& pos, float spd, float rad, const std::vector<glm::vec2>* rt_ptr, int hp = 1000, int mp = 1000, const std::string& hero_name = "Hero") {
-        position.push_back(pos);
+        pos_x.push_back(pos.x);
+        pos_y.push_back(pos.y);
+        pos_z.push_back(pos.z);
         direction.push_back(glm::vec2{ 0.f, 0.f });
         speed.push_back(spd);
         health.push_back(hp);
@@ -41,11 +48,13 @@ struct HeroSystem {
     }
 
     void remove_hero(size_t index) {
-        if (index >= position.size()) return;
+        if (index >= pos_x.size()) return;
 
-        size_t last = position.size() - 1;
+        size_t last = pos_x.size() - 1;
         if (index != last) {
-            position[index] = position[last];
+            pos_x[index] = pos_x[last];
+            pos_y[index] = pos_y[last];
+            pos_z[index] = pos_z[last];
             direction[index] = direction[last];
             speed[index] = speed[last];
             health[index] = health[last];
@@ -58,8 +67,9 @@ struct HeroSystem {
             name[index] = std::move(name[last]);
         }
 
-        position.pop_back();
-        direction.pop_back();
+        pos_x.pop_back();
+        pos_y.pop_back();
+        pos_z.pop_back();        direction.pop_back();
         speed.pop_back();
         health.pop_back();
         mana.pop_back();
@@ -72,8 +82,9 @@ struct HeroSystem {
     }
 
     void clear() {
-        position.clear();
-        direction.clear();
+        pos_x.clear();
+        pos_y.clear();
+        pos_z.clear();        direction.clear();
         speed.clear();
         health.clear();
         mana.clear();
@@ -86,8 +97,9 @@ struct HeroSystem {
     }
 
     void reserve(size_t capacity) {
-        position.reserve(capacity);
-        direction.reserve(capacity);
+        pos_x.reserve(capacity);
+        pos_y.reserve(capacity);
+        pos_z.reserve(capacity);        direction.reserve(capacity);
         speed.reserve(capacity);
         health.reserve(capacity);
         mana.reserve(capacity);
@@ -100,8 +112,9 @@ struct HeroSystem {
     }
 
     void merge(const HeroSystem& other) {
-        position.insert(position.end(), other.position.begin(), other.position.end());
-        direction.insert(direction.end(), other.direction.begin(), other.direction.end());
+        pos_x.insert(pos_x.end(), other.pos_x.begin(), other.pos_x.end());
+        pos_y.insert(pos_y.end(), other.pos_y.begin(), other.pos_y.end());
+        pos_z.insert(pos_z.end(), other.pos_z.begin(), other.pos_z.end());        direction.insert(direction.end(), other.direction.begin(), other.direction.end());
         speed.insert(speed.end(), other.speed.begin(), other.speed.end());
         health.insert(health.end(), other.health.begin(), other.health.end());
         mana.insert(mana.end(), other.mana.begin(), other.mana.end());
@@ -112,14 +125,22 @@ struct HeroSystem {
         route_index.insert(route_index.end(), other.route_index.begin(), other.route_index.end()); // FIX: Was vergeten!
         name.insert(name.end(), other.name.begin(), other.name.end());
     }
-
+    
     glm::mat4 get_transform_matrix(size_t i) const {
-        glm::mat4 rot(1.0f);
-        rot[0][0] =  direction[i].y; 
-        rot[0][2] = -direction[i].x; 
-        rot[2][0] =  direction[i].x; 
-        rot[2][2] =  direction[i].y;
-        return glm::translate(glm::mat4(1.0f), position[i]) * rot;
+        glm::mat4 m(1.0f); // Initialiseer eenmalig de identiteitsmatrix
+
+        // Pas de rotatie toe (kolom 0 en 2)
+        m[0][0] =  direction[i].y; 
+        m[0][2] = -direction[i].x; 
+        m[2][0] =  direction[i].x; 
+        m[2][2] =  direction[i].y;
+
+        // Pas de translatie direct toe in de 4e kolom (kolom 3 in zero-indexed)
+        m[3][0] = pos_x[i];
+        m[3][1] = pos_y[i];
+        m[3][2] = pos_z[i];
+
+        return m;
     }
 
     struct PendingSpawn {
@@ -145,8 +166,19 @@ struct HeroSystem {
     
     void flush_mutations() {
         if (!pending_removes.empty()) {
-            std::sort(pending_removes.begin(), pending_removes.end(), std::greater<size_t>());
-            pending_removes.erase(std::unique(pending_removes.begin(), pending_removes.end()), pending_removes.end());
+            // 1. Sorteer aflopend (grootste index eerst) zonder std::sort
+            algo_utils::manual_quicksort(pending_removes.data(), 0, static_cast<int>(pending_removes.size()) - 1, 
+                [](size_t a, size_t b) { return a > b; });
+
+            // 2. Verwijder duplicaten in-place zonder std::unique
+            size_t write_idx = 0;
+            for (size_t i = 1; i < pending_removes.size(); i++) {
+                if (pending_removes[i] != pending_removes[write_idx]) {
+                    write_idx++;
+                    pending_removes[write_idx] = pending_removes[i];
+                }
+            }
+            pending_removes.resize(write_idx + 1);
 
             for (size_t idx : pending_removes) {
                 remove_hero(idx);
@@ -161,11 +193,11 @@ struct HeroSystem {
     }
     
     void update_hero(size_t i, float delta_time, const Terrain& terrain, uint32_t phase) {
-        if (i >= route_index.size() || i >= route_ptr.size() || i >= position.size() || !active[i]) return;
+        if (i >= route_index.size() || i >= route_ptr.size() || i >= pos_x.size() || !active[i]) return;
 
         int curr_idx = route_index[i];
         float distance = delta_time * speed[i];
-        glm::vec2 pos2d(position[i].x, position[i].z);
+        glm::vec2 pos2d(pos_x[i], pos_z[i]);
 
         pos2d += force[i];
         force[i] = glm::vec2{ 0.f, 0.f };
@@ -181,8 +213,7 @@ struct HeroSystem {
                 const float dist_sq = (target_direction.x * target_direction.x) + (target_direction.y * target_direction.y);
 
                 if (dist_sq > 0.00001f) {
-                    float inv_dist = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dist_sq)));
-                    inv_dist = inv_dist * (1.5f - (0.5f * dist_sq * inv_dist * inv_dist));
+                    float inv_dist = math_utils::fast_inv_sqrt(dist_sq);
 
                     const float dist = dist_sq * inv_dist;
                     const glm::vec2 dir = target_direction * inv_dist;
@@ -211,11 +242,11 @@ struct HeroSystem {
             route_index[i] = curr_idx;
         }
 
-        position[i].x = pos2d.x;
-        position[i].z = pos2d.y;
+        pos_x[i] = pos2d.x;
+        pos_z[i] = pos2d.y;
 
         if ((i & 3) == phase) {
-            position[i].y = terrain.get_height_fast(pos2d);
+            pos_y[i] = terrain.get_height_fast(pos2d);
         }
     }
 

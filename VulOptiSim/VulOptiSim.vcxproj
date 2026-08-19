@@ -162,11 +162,14 @@
     <ClCompile Include="VulOptiSim.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="algo_utils.h" />
     <ClInclude Include="camera.h" />
+    <ClInclude Include="geo_utils.h" />
     <ClInclude Include="HeroSystem.h" />
     <ClInclude Include="lightning.h" />
     <ClInclude Include="log.h" />
     <ClInclude Include="magic_staff.h" />
+    <ClInclude Include="math_utils.h" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="projectile.h" />
     <ClInclude Include="scene.h" />

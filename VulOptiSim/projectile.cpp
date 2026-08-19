@@ -1,5 +1,9 @@
 #include "pch.h"
 #include "projectile.h"
+#include <immintrin.h>
+#include <xmmintrin.h>
+#include <cstdint>
+
 
 Projectile::Projectile()
 {
@@ -53,32 +57,71 @@ void Projectile::update(
 }
 
 
+#include <immintrin.h>
+#include <cstdint>
+
+#include <immintrin.h>
+#include <cstdint>
+
 void Projectile::check_collisions(HeroSystem& heroes)
 {
     const float px = transform.position.x;
     const float pz = transform.position.z;
-    uint32_t triggered = 0; // We gebruiken een integer voor branchless bitwise operaties
-
-    const uint8_t* active_ptr = heroes.active.data();
-    const glm::vec3* pos_ptr = heroes.position.data();
-    const float* rad_ptr = heroes.collision_radius.data();
     const size_t count = heroes.size();
 
-    // GEEN 'break' of 'if' statements! MSVC /O2 en /fp:fast vectoriseert dit nu genadeloos.
-    for(size_t i = 0; i < count; i++)
-    {
-        const float r = radius + rad_ptr[i];
-        const float dx = pos_ptr[i].x - px;
-        const float dz = pos_ptr[i].z - pz;
-        const float dist_sq = (dx * dx) + (dz * dz);
+    const uint8_t* active_ptr = heroes.active.data();
+    const float* pos_x_ptr = heroes.pos_x.data(); // Nu pure SoA arrays!
+    const float* pos_z_ptr = heroes.pos_z.data(); // Nu pure SoA arrays!
+    const float* rad_ptr = heroes.collision_radius.data();
 
-        // Branchless hit detectie: als distance <= radius, wordt het een '1'. 
-        // Samen met de boolean van 'active', flippen we de triggered flag.
-        triggered |= (active_ptr[i] & (dist_sq <= (r * r)));
+    const __m256 v_px = _mm256_set1_ps(px);
+    const __m256 v_pz = _mm256_set1_ps(pz);
+    const __m256 v_proj_r = _mm256_set1_ps(radius);
+
+    size_t i = 0;
+    for (; i + 7 < count; i += 8)
+    {
+        uint64_t active_bytes = *reinterpret_cast<const uint64_t*>(active_ptr + i);
+        if (active_bytes == 0) continue;
+
+        // 2. Active mask berekenen
+        __m128i v_act_128 = _mm_cvtsi64_si128(active_bytes);
+        __m256i v_act_32 = _mm256_cvtepu8_epi32(v_act_128);
+        __m256 v_act_ps = _mm256_castsi256_ps(_mm256_cmpgt_epi32(v_act_32, _mm256_setzero_si256()));
+
+        // 3. RADICALE VERSNELLING: Directe 32-byte contigue loads ipv trage gathers
+        __m256 v_hx = _mm256_loadu_ps(pos_x_ptr + i);
+        __m256 v_hz = _mm256_loadu_ps(pos_z_ptr + i);
+        __m256 v_hr = _mm256_loadu_ps(rad_ptr + i);
+
+        __m256 v_r = _mm256_add_ps(v_proj_r, v_hr);
+        __m256 v_r_sq = _mm256_mul_ps(v_r, v_r);
+
+        // Omdat v_hx en v_hz er nu onmiddellijk zijn, stallen de onderstaande regels niet meer!
+        __m256 v_dx = _mm256_sub_ps(v_hx, v_px);
+        __m256 v_dz = _mm256_sub_ps(v_hz, v_pz);
+        __m256 v_dist_sq = _mm256_add_ps(_mm256_mul_ps(v_dx, v_dx), _mm256_mul_ps(v_dz, v_dz));
+
+        __m256 v_hit = _mm256_cmp_ps(v_dist_sq, v_r_sq, _CMP_LE_OQ);
+        v_hit = _mm256_and_ps(v_hit, v_act_ps); 
+
+        if (_mm256_movemask_ps(v_hit) != 0) {
+            explode(heroes);
+            return; 
+        }
     }
 
-    if (triggered) {
-        explode(heroes);
+    // Remainder loop
+    for (; i < count; ++i)
+    {
+        if (!active_ptr[i]) continue;
+        const float r = radius + rad_ptr[i];
+        const float dx = pos_x_ptr[i] - px;
+        const float dz = pos_z_ptr[i] - pz;
+        if ((dx * dx + dz * dz) <= (r * r)) {
+            explode(heroes);
+            return;
+        }
     }
 }
 
@@ -88,7 +131,8 @@ void Projectile::explode(HeroSystem& heroes)
     const float pz = transform.position.z;
 
     uint8_t* active_ptr = heroes.active.data();
-    glm::vec3* pos_ptr = heroes.position.data();
+    float* px_ptr = heroes.pos_x.data();
+    float* pz_ptr = heroes.pos_z.data();
     float* rad_ptr = heroes.collision_radius.data();
     const size_t count = heroes.size();
 
@@ -97,8 +141,8 @@ void Projectile::explode(HeroSystem& heroes)
         if (!active_ptr[i]) continue;
 
         const float r = explosion_radius + rad_ptr[i];
-        const float dx = pos_ptr[i].x - px;
-        const float dz = pos_ptr[i].z - pz;
+        const float dx = px_ptr[i] - px;
+        const float dz = pz_ptr[i] - pz;
 
         if ((dx * dx + dz * dz) <= (r * r))
         {

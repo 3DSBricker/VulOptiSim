@@ -48,7 +48,8 @@ void Lightning::check_hits(HeroSystem& hero_system) const
     const float max_z = collision_box_max.y;
 
     uint8_t* active_ptr = hero_system.active.data();
-    glm::vec3* pos_ptr = hero_system.position.data();
+    const float* pos_x_ptr = hero_system.pos_x.data();
+    const float* pos_z_ptr = hero_system.pos_z.data();
     float* rad_ptr = hero_system.collision_radius.data();
     const size_t count = hero_system.size();
 
@@ -56,8 +57,8 @@ void Lightning::check_hits(HeroSystem& hero_system) const
     {
         if (!active_ptr[i]) continue;
 
-        const float hx = pos_ptr[i].x;
-        const float hz = pos_ptr[i].z;
+        const float hx = pos_x_ptr[i];
+        const float hz = pos_z_ptr[i];
 
         const float clamped_x = (hx < min_x) ? min_x : (hx > max_x) ? max_x : hx;
         const float clamped_z = (hz < min_z) ? min_z : (hz > max_z) ? max_z : hz;

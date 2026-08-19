@@ -32,7 +32,9 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
 
     const uint8_t* active_ptr = hero_system.active.data();
     const int* mana_ptr = hero_system.mana.data();
-    const glm::vec3* pos_ptr = hero_system.position.data();
+    const float* pos_x_ptr = hero_system.pos_x.data();
+    const float* pos_y_ptr = hero_system.pos_y.data();
+    const float* pos_z_ptr = hero_system.pos_z.data();
 
     ExtremaChunk global_extrema;
 
@@ -44,10 +46,10 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
             if (active_ptr[i] && mana_ptr[i] > 0) {
                 auto& c = chunks[chunk_id];
                 c.has_points = true;
-                glm::vec2 p(pos_ptr[i].x, pos_ptr[i].z);
+                glm::vec2 p(pos_x_ptr[i], pos_z_ptr[i]);
                 float sum = p.x + p.y;
                 float diff = p.x - p.y;
-                float y = pos_ptr[i].y;
+                float y = pos_y_ptr[i];
 
                 if (p.x < c.p_min_x.x) c.p_min_x = p;
                 if (p.x > c.p_max_x.x) c.p_max_x = p;
@@ -97,10 +99,10 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
         for (size_t i = 0; i < count; ++i) {
             if (active_ptr[i] && mana_ptr[i] > 0) {
                 global_extrema.has_points = true;
-                glm::vec2 p(pos_ptr[i].x, pos_ptr[i].z);
+                glm::vec2 p(pos_x_ptr[i], pos_z_ptr[i]);
                 float sum = p.x + p.y;
                 float diff = p.x - p.y;
-                float y = pos_ptr[i].y;
+                float y = pos_y_ptr[i];
 
                 if (p.x < global_extrema.p_min_x.x) global_extrema.p_min_x = p;
                 if (p.x > global_extrema.p_max_x.x) global_extrema.p_max_x = p;
@@ -137,7 +139,7 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
     extreme_points.reserve(8);
     auto add_unique = [&](const glm::vec2& pt) {
         for (const auto& existing : extreme_points) {
-            if (glm::abs(existing.x - pt.x) < 0.1f && glm::abs(existing.y - pt.y) < 0.1f) return;
+            if (math_utils::abs_diff(existing.x, pt.x) < 0.1f && glm::abs(existing.y - pt.y) < 0.1f) return;
         }
         extreme_points.push_back(pt);
     };
@@ -162,16 +164,23 @@ std::vector<glm::vec2> Shield::convex_hull(std::vector<glm::vec2> all_points) co
 {
     if (all_points.size() <= 3) return all_points;
 
-    // 1. Sorteren is VERPLICHT voor een efficiënte hull en maakt deduplicatie mogelijk
-    std::sort(all_points.begin(), all_points.end(), [](const glm::vec2& a, const glm::vec2& b) {
-        return a.x < b.x || (a.x == b.x && a.y < b.y);
-    });
+    // 1. Handmatige sortering
+    algo_utils::manual_quicksort(all_points.data(), 0, static_cast<int>(all_points.size()) - 1, 
+        [](const glm::vec2& a, const glm::vec2& b) {
+            return a.x < b.x || (a.x == b.x && a.y < b.y);
+        });
 
-    // 2. Verwijder echte duplicates nu de array gesorteerd is (std::unique werkt nu correct)
-    all_points.erase(std::unique(all_points.begin(), all_points.end(), [](const glm::vec2& a, const glm::vec2& b) {
-        return glm::abs(a.x - b.x) < 0.001f && glm::abs(a.y - b.y) < 0.001f;
-    }), all_points.end());
-
+    // 2. Handmatige deduplicatie
+    size_t write_idx = 0;
+    for (size_t i = 1; i < all_points.size(); i++) {
+        if (glm::abs(all_points[i].x - all_points[write_idx].x) > 0.001f || 
+            glm::abs(all_points[i].y - all_points[write_idx].y) > 0.001f) {
+            write_idx++;
+            all_points[write_idx] = all_points[i];
+            }
+    }
+    all_points.resize(write_idx + 1);
+    
     // 3. Monotone Chain Algorithm
     std::vector<glm::vec2> hull;
     hull.reserve(all_points.size());
@@ -286,13 +295,13 @@ void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const
 {
     // Bewaar indices (size_t) in plaats van pointers (Hero*)
     std::vector<size_t> closest_heroes;
-    std::vector<float> closest_distances(n_to_sustain, std::numeric_limits<float>::max());
+    std::vector<float> closest_distances(n_to_sustain, math_utils::FLT_MAX_VAL);
 
     for (size_t i = 0; i < hero_system.size(); i++)
     {
         if (!hero_system.active[i]) continue;
 
-        glm::vec2 pos2d(hero_system.position[i].x, hero_system.position[i].z);
+        glm::vec2 pos2d(hero_system.pos_x[i], hero_system.pos_z[i]);
         float distance_squared = glm::length2(pos2d - point);
 
         if (closest_heroes.size() < n_to_sustain)
@@ -330,7 +339,10 @@ void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const
 /// </summary>
 glm::vec2 Shield::calculate_centroid()
 {
-    glm::vec2 sum = std::accumulate(convex_hull_points.begin(), convex_hull_points.end(), glm::vec2(0.0f, 0.0f));
+    glm::vec2 sum(0.0f, 0.0f);
+    for (const auto& convex_point : convex_hull_points) {
+        sum += convex_point;
+    }
     return sum / static_cast<float>(convex_hull_points.size());
 }
 

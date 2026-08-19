@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <immintrin.h> // VERPLICHT voor _mm_rsqrt_ss
 
+#include "algo_utils.h"
+
 Scene::Scene(vulvox::Renderer* renderer) : renderer(renderer), terrain(std::make_unique<Terrain>(TERRAIN_PATH)),
-pool(std::max(1u, std::thread::hardware_concurrency())),
-hero_grid(10000.0f, 8.0f) 
+                                           pool(math_utils::max(1u, std::thread::hardware_concurrency())),
+                                           hero_grid(10000.0f, 8.0f) 
 {
     auto total_start = std::chrono::high_resolution_clock::now();
     std::vector<std::future<void>> future;
@@ -109,16 +111,19 @@ void Scene::load_animation_effects() const
 {
     std::vector<std::future<void>> futures;
     
-    futures.push_back(std::async(std::launch::async, [this] {
+    // We casten 'this' tijdelijk om de pool via een const functie aan te roepen
+    auto* non_const_this = const_cast<Scene*>(this);
+    
+    futures.push_back(non_const_this->pool.enqueue([this] {
         std::vector<std::filesystem::path> shield_path{ SHIELD_TEXTURE_PATH };
         renderer->load_texture_array("shield", shield_path);
     }));
     
-    futures.push_back(std::async(std::launch::async, [this] {
+    futures.push_back(non_const_this->pool.enqueue([this] {
         renderer->load_texture_array("lightning", LIGHTNING_TEXTURE_PATHS);
     }));
     
-    futures.push_back(std::async(std::launch::async, [this] {
+    futures.push_back(non_const_this->pool.enqueue([this] {
         renderer->load_texture_array("fireball", FIREBALL_TEXTURE_PATHS);
     }));
     
@@ -129,8 +134,6 @@ void Scene::load_animation_effects() const
 
 void Scene::spawn_heroes()
 {
-    std::cout << "Terrain ptr: " << terrain.get() << '\n';
-
     int start_areas = 10;
     float start_area_tile_offset = 12.f;
     float spawn_start_y = terrain->tile_width * 3.f;
@@ -187,7 +190,7 @@ void Scene::spawn_heroes()
     for (auto& f : futures) f.get();
 
     for(size_t i = 0; i < hero_system.size(); i++) {
-        hero_grid.add_hero(i, glm::vec2(hero_system.position[i].x, hero_system.position[i].z));
+        hero_grid.add_hero(i, glm::vec2(hero_system.pos_x[i], hero_system.pos_z[i]));
     }
 }
 
@@ -219,7 +222,8 @@ size_t Scene::get_staff_count() const { return staves.size(); }
 void Scene::check_collisions()
 {
     // Trek pointers los uit de Struct of Arrays (SoA)
-    const glm::vec3* pos_ptr = hero_system.position.data();
+    const float* pos_x_ptr = hero_system.pos_x.data();
+    const float* pos_z_ptr = hero_system.pos_z.data();
     const float* rad_ptr = hero_system.collision_radius.data();
     const uint8_t* active_ptr = hero_system.active.data();
     glm::vec2* force_ptr = hero_system.force.data();
@@ -227,7 +231,7 @@ void Scene::check_collisions()
     pool.parallel_for_chunked(hero_system.size(), [&](size_t i, size_t chunk_id) {
         if (!active_ptr[i]) return;
 
-        const glm::vec2 pos_i(pos_ptr[i].x, pos_ptr[i].z);
+        const glm::vec2 pos_i(pos_x_ptr[i], pos_z_ptr[i]);
         const float radius_i = rad_ptr[i];
         const int cell = hero_grid.get_cell_id(pos_i);
         
@@ -236,25 +240,21 @@ void Scene::check_collisions()
         
         while (j != -1) {
             if (i != (size_t)j) { 
-                const float diff_x = pos_ptr[j].x - pos_i.x;
-                const float diff_y = pos_ptr[j].z - pos_i.y; 
+                const float diff_x = pos_x_ptr[j] - pos_i.x;
+                const float diff_y = pos_z_ptr[j] - pos_i.y;
                 
                 const float dist_sq = (diff_x * diff_x) + (diff_y * diff_y);
                 const float radius_sum = radius_i + rad_ptr[j];
                 const float radius_sum_sq = radius_sum * radius_sum;
                 
                 if (dist_sq < radius_sum_sq && dist_sq > 0.0001f) {
-                // Hardware matige fast inverse square root (approx 4 CPU cycles!)
-                float inv_dist = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dist_sq)));
-                
-                // Optioneel: 1 Newton-Raphson iteratie als het stottert, maar voor collisions is de schatting accuraat genoeg
-                // inv_dist = inv_dist * (1.5f - (0.5f * dist_sq * inv_dist * inv_dist));
+                    float inv_dist = math_utils::fast_inv_sqrt(dist_sq);
 
-                // Wiskundig gereduceerde overlap-deling
-                float multiplier = (radius_sum * inv_dist) - 1.0f; 
-                
-                force.x -= diff_x * multiplier;
-                force.y -= diff_y * multiplier; 
+                    // Wiskundig gereduceerde overlap-deling
+                    float multiplier = (radius_sum * inv_dist) - 1.0f; 
+                    
+                    force.x -= diff_x * multiplier;
+                    force.y -= diff_y * multiplier; 
                 }
             }
             j = hero_grid.next[j]; 
@@ -271,19 +271,19 @@ void Scene::update(const float delta_time)
     
     if (follow_mode && !hero_system.empty()) {
         size_t max_idx = 0;
-        float max_z = std::numeric_limits<float>::lowest();
+        float max_z = math_utils::FLT_LOWEST_VAL;
         
         for (size_t i = 0; i < hero_system.size(); ++i) {
-            if (hero_system.active[i] && hero_system.position[i].z > max_z) {
-                max_z = hero_system.position[i].z;
+            if (hero_system.active[i] && hero_system.pos_z[i] > max_z) {
+                max_z = hero_system.pos_z[i];
                 max_idx = i;
             }
         }
         
-        static float last_z = std::numeric_limits<float>::lowest();
-        const glm::vec3 hero_pos = hero_system.position[max_idx];
+        static float last_z = math_utils::FLT_LOWEST_VAL;
+        const glm::vec3 hero_pos(hero_system.pos_x[max_idx], hero_system.pos_y[max_idx], hero_system.pos_z[max_idx]);
         
-        if (std::abs(hero_pos.z - last_z) > 0.001f) {
+        if (math_utils::abs(hero_pos.z - last_z) > 0.001f) {
             last_z = hero_pos.z;
             const glm::vec3 camera_pos{ -28.0f, 305.5f, hero_pos.z };
             camera.set_position(camera_pos);
@@ -378,7 +378,7 @@ void Scene::draw()
     });
 
     pool.parallel_for_chunked(hero_count, [&](size_t i, size_t chunk_id) {
-        glm::vec3 pos = hero_system.position[i];
+        glm::vec3 pos(hero_system.pos_x[i], hero_system.pos_y[i], hero_system.pos_z[i]);
         
         float dx = pos.x - cam_pos.x;
         float dz = pos.z - cam_pos.z;
@@ -425,19 +425,19 @@ void Scene::draw()
     size_t offset0 = 0, offset1 = 0, offset2 = 0, offset_staff = 0;
     for (size_t w = 0; w < num_workers; w++) {
         if(lod0_chunks[w].count > 0) {
-            std::memcpy(&lod0[offset0], lod0_chunks[w].data.data(), lod0_chunks[w].count * sizeof(glm::mat4));
+            algo_utils::fast_copy_mat4(&lod0[offset0], lod0_chunks[w].data.data(), lod0_chunks[w].count);
             offset0 += lod0_chunks[w].count;
         }
         if(lod1_chunks[w].count > 0) {
-            std::memcpy(&lod1[offset1], lod1_chunks[w].data.data(), lod1_chunks[w].count * sizeof(glm::mat4));
+            algo_utils::fast_copy_mat4(&lod1[offset1], lod1_chunks[w].data.data(), lod1_chunks[w].count);
             offset1 += lod1_chunks[w].count;
         }
         if(lod2_chunks[w].count > 0) {
-            std::memcpy(&lod2[offset2], lod2_chunks[w].data.data(), lod2_chunks[w].count * sizeof(glm::mat4));
+            algo_utils::fast_copy_mat4(&lod2[offset2], lod2_chunks[w].data.data(), lod2_chunks[w].count);
             offset2 += lod2_chunks[w].count;
         }
         if(staff_chunks[w].count > 0) {
-            std::memcpy(&staff_transforms[offset_staff], staff_chunks[w].data.data(), staff_chunks[w].count * sizeof(glm::mat4));
+            algo_utils::fast_copy_mat4(&staff_transforms[offset_staff], staff_chunks[w].data.data(), staff_chunks[w].count);
             offset_staff += staff_chunks[w].count;
         }
     }
@@ -448,7 +448,8 @@ void Scene::draw()
     
     if (!staff_transforms.empty()) renderer->draw_batch("staff", "staff", staff_transforms);
         
-    terrain->draw(renderer, cam_pos);
+    glm::mat4 view_proj = camera.get_projection_matrix() * camera.get_view_matrix();
+    terrain->draw(renderer, cam_pos, view_proj);
         
     for (const auto& lightning : active_lightning) { lightning.register_draw(lightning_sprite_manager); }
     lightning_sprite_manager.draw(renderer);
@@ -479,7 +480,7 @@ void Scene::show_health_values() const
         }
     }
 
-    sort(health_values);
+    algo_utils::parallel_sort(health_values);
 
     ImGui::Begin("Heroes Health Bars");
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.90f);
@@ -506,7 +507,7 @@ void Scene::show_mana_values() const
         }
     }
 
-    sort(mana_values);
+    algo_utils::parallel_sort(mana_values);
 
     ImGui::Begin("Heroes Mana Bars");
     ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.90f);
@@ -525,6 +526,7 @@ void Scene::show_mana_values() const
     ImGui::End();
 }
 
+/*
 void Scene::sort(std::vector<int>& arr) const
 {
     quicksort(arr, 0, arr.size() - 1);
@@ -553,6 +555,7 @@ void Scene::quicksort(std::vector<int>& arr, int low, int high) const
     quicksort(arr, low, right);  
     quicksort(arr, left, high);  
 }
+*/
 
 void Scene::handle_input(const float delta_time)
 {

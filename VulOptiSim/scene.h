@@ -14,8 +14,8 @@ public:
     void update(const float delta_time);
     void draw();
 
-    void sort(std::vector<int>& arr) const;
-    void quicksort(std::vector<int>& arr, int low, int high) const;
+    // void sort(std::vector<int>& arr) const;
+    // void quicksort(std::vector<int>& arr, int low, int high) const;
 
     void load_models_and_textures() const;
     void load_effects() const;
@@ -108,27 +108,105 @@ private:
 
     struct Grid {
         int width;
+        int total_cells;
         float cell_size;
+        int cols, rows;
         std::vector<int> head;
         std::vector<int> head_frame; 
         std::vector<int> next;
-        int current_frame = 1;       
+        int current_frame = 1;
+        
+        // Aaneengesloten geheugenblokken beheerd door vector
+        std::vector<int> cell_counts;      
+        std::vector<int> cell_starts;      
+        std::vector<int> dense_indices;
 
         Grid(float max_world_size, float size) : cell_size(size) {
             width = static_cast<int>(max_world_size / size) + 1;
+            cols = width;
+            rows = width;
+            total_cells = cols * rows;
+            
+            // Allocatie van de parallelle spatial partitioning vectors
+            cell_counts.resize(total_cells, 0);
+            cell_starts.resize(total_cells, 0);
+            
             head.assign(width * width, -1);
             head_frame.assign(width * width, 0);
             next.assign(20000, -1); 
         }
-
+        
         inline int get_cell_id(const glm::vec2& pos) const {
-            int x = static_cast<int>(std::max(0.0f, pos.x) / cell_size);
-            int y = static_cast<int>(std::max(0.0f, pos.y) / cell_size);
-            return x + (y * width);
+            // Vang alle niet-eindige floats (NaN en Infinity) af
+            if (!std::isfinite(pos.x) || !std::isfinite(pos.y)) {
+                return 0; 
+            }
+
+            int c = static_cast<int>(pos.x / cell_size);
+            int r = static_cast<int>(pos.y / cell_size);
+
+            c = std::clamp(c, 0, cols - 1);
+            r = std::clamp(r, 0, rows - 1);
+
+            return r * cols + c;
         }
 
         inline void clear() { 
             current_frame++; 
+        }
+        
+        // De functie op zijn juiste plek, werkend met de std::vector data pointers
+        void build_parallel(const HeroSystem& heroes, ThreadPool& pool) {
+            if (cell_counts.empty() || total_cells == 0) return;
+            const size_t count = heroes.size();
+            if (count == 0) return;
+            
+            // Zorg dat dense_indices genoeg ruimte heeft voor alle huidige heroes
+            if (dense_indices.size() < count) {
+                dense_indices.resize(count);
+            }
+
+            const uint8_t* active_mask = heroes.active.data(); 
+            const float* px_ptr = heroes.pos_x.data();
+            const float* pz_ptr = heroes.pos_z.data();
+
+            // Haal de rauwe pointers op voor C-level performance
+            int* counts_ptr = cell_counts.data();
+            int* starts_ptr = cell_starts.data();
+            int* dense_ptr = dense_indices.data();
+
+            // PASS 1: Parallel Clear
+            pool.parallel_for_chunked(total_cells, [&](size_t i, size_t chunk_id) {
+                counts_ptr[i] = 0;
+            });
+
+            // PASS 2: Parallel Tellen van heroes per cel
+            pool.parallel_for_chunked(count, [&](size_t i, size_t chunk_id) {
+                if (active_mask[i] == 0) return;
+                int cell = get_cell_id(glm::vec2(px_ptr[i], pz_ptr[i]));
+                
+                // Snelle atomaire increment
+                _InterlockedIncrement(reinterpret_cast<volatile long*>(&counts_ptr[cell]));
+            });
+
+            // PASS 3: Prefix Sum (Sequentieel, pure cache snelheid)
+            int current_offset = 0;
+            for (int i = 0; i < total_cells; ++i) {
+                starts_ptr[i] = current_offset;
+                current_offset += counts_ptr[i];
+                counts_ptr[i] = 0; // RESET direct weer naar 0 voor Pass 4
+            }
+
+            // PASS 4: Parallel Invoegen in de Dense Array
+            pool.parallel_for_chunked(count, [&](size_t i, size_t chunk_id) {
+                if (active_mask[i] == 0) return;
+                int cell = get_cell_id(glm::vec2(px_ptr[i], pz_ptr[i]));
+                
+                int local_offset = _InterlockedExchangeAdd(reinterpret_cast<volatile long*>(&counts_ptr[cell]), 1);
+                
+                int write_index = starts_ptr[cell] + local_offset;
+                dense_ptr[write_index] = static_cast<int>(i);
+            });
         }
 
         void add_hero(int hero_index, const glm::vec2& position) {

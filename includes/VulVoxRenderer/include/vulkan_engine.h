@@ -22,17 +22,34 @@
 
 namespace vulvox
 {
-    // Zet dit bovenaan je Vulkan_Engine.h (buiten de class, of als private struct)
-    struct StaticInstanceGroup {
-        VkBuffer matrix_buffer = VK_NULL_HANDLE;
-        VmaAllocation matrix_allocation = VK_NULL_HANDLE;
-        uint32_t instance_count = 0;
+    
+    // De structuur die precies overeenkomt met de input van je vertex shader
+    struct TerrainInstanceData {
+        glm::mat4 model_matrix;
+        uint32_t texture_index;
+        uint32_t padding[3]; // Noodzakelijk voor 16-byte (vec4) alignment in Vulkan shaders
     };
+    
+    struct StaticInstanceGroup {
+        // Buffer voor de glm::mat4 transformaties (Binding 1)
+        VkBuffer transform_buffer = VK_NULL_HANDLE;
+        VmaAllocation transform_allocation = VK_NULL_HANDLE;
+
+        // Buffer voor de uint32_t texture indices (Binding 2)
+        VkBuffer texture_index_buffer = VK_NULL_HANDLE;
+        VmaAllocation texture_index_allocation = VK_NULL_HANDLE;
+
+        uint32_t instance_count = 0;
+        std::string model_name;
+        std::string texture_array_name;
+    };
+    
+    using StaticInstanceHandle = uint32_t;
+
     
     class Vulkan_Engine
     {
     public:
-        using StaticInstanceHandle = uint32_t;
 
         Vulkan_Engine();
         ~Vulkan_Engine();
@@ -45,14 +62,6 @@ namespace vulvox
         void init_imgui();
         void disable_imgui();
         ImGui_Context* get_imgui_context() const;
-        
-        struct TerrainInstanceData {
-            glm::vec4 position_tex; // x,y,z = wereldpositie | w = texture index
-            glm::vec4 scale_pad;    // x,y,z = scale | w = padding
-        };
-
-        uint32_t register_static_instances(const std::vector<TerrainInstanceData>& instance_data);
-        void draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle);
         
         void destroy();
 
@@ -80,8 +89,11 @@ namespace vulvox
         void draw_instanced(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& model_matrices);
         void draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
         void draw_planes(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs);
-        void draw_terrain(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs);
 
+        StaticInstanceHandle create_static_instance_group(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& transforms, const std::vector<uint32_t>& texture_indices);
+        void draw_static_instance_group(StaticInstanceHandle handle);
+        void destroy_static_instance_group(StaticInstanceHandle handle);
+        
         bool initialized() const;
 
         bool framebuffer_resized = false;
@@ -97,8 +109,6 @@ namespace vulvox
         void recreate_swap_chain();
         void cleanup_swap_chain();
         
-        VkPipeline static_terrain_pipeline = VK_NULL_HANDLE; // Specifiek voor de nieuwe struct
-
         void create_graphics_pipeline();
 
         // Administratie voor de statische groepen
@@ -215,7 +225,7 @@ namespace vulvox
         VkPipeline instance_tex_array_pipeline;
         VkPipeline vertex_pipeline;
         VkPipeline instance_plane_pipeline;
-        VkPipeline instance_terrain_pipeline;
+        VkPipeline static_terrain_mesh_pipeline;
 
         struct Command_State_Cache
         {

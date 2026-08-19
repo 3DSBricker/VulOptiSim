@@ -68,7 +68,9 @@ void Magic_Staff::spawn_projectile(HeroSystem& hero_system, std::vector<Projecti
     if (has_target && current_target_index < hero_system.size())
     {
         // Gebruik de positie uit de HeroSystem array
-        glm::vec3 target_pos = hero_system.position[current_target_index];
+        glm::vec3 target_pos(hero_system.pos_x[current_target_index], 
+                     hero_system.pos_y[current_target_index], 
+                     hero_system.pos_z[current_target_index]);
 
         active_projectiles.emplace_back(
             transform.position,
@@ -86,13 +88,13 @@ void Magic_Staff::spawn_projectile(HeroSystem& hero_system, std::vector<Projecti
 void Magic_Staff::find_closest_target(const HeroSystem& hero_system)
 {
     has_target = false;
-    float closest_distance_squared = std::numeric_limits<float>::max();
+    float closest_distance_squared = math_utils::FLT_MAX_VAL;
 
     for (size_t i = 0; i < hero_system.size(); i++)
     {
         if (!hero_system.active[i]) continue;
 
-        glm::vec2 pos2d(hero_system.position[i].x, hero_system.position[i].z);
+        glm::vec2 pos2d(hero_system.pos_x[i], hero_system.pos_z[i]);
         float distance_squared = glm::length2(pos2d - transform.get_position2d());
 
         if (distance_squared < closest_distance_squared)

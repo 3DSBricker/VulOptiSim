@@ -60,9 +60,6 @@ namespace vulvox
             // afhankelijk van hoe jouw buffer_manager geheugen beheert.
         };
         
-        uint32_t register_static_instances(const std::vector<Vulkan_Engine::TerrainInstanceData>& instance_data);
-        void draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle);
-        
         void draw_model(const std::string& model_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_mesh(const std::string& mesh_name, const std::string& texture_name, const glm::mat4& model_matrix);
         void draw_model_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const int texture_index, const glm::mat4& model_matrix);
@@ -71,6 +68,10 @@ namespace vulvox
         void draw_instanced_with_texture_array(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices);
         void draw_planes(const std::string& texture_array_name, const std::vector<glm::mat4>& model_matrices, const std::vector<uint32_t>& texture_indices, const std::vector<glm::vec4>& min_max_uvs);
 
+        StaticInstanceHandle create_static_instance_group(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& transforms, const std::vector<uint32_t>& texture_indices);
+        void draw_static_instance_group(StaticInstanceHandle handle);
+        void destroy_static_instance_group(StaticInstanceHandle handle);
+        
         void load_model(const std::string& model_name, const std::filesystem::path& path);
         void load_mesh(const std::string& mesh_name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         void load_texture(const std::string& texture_name, const std::filesystem::path& path);

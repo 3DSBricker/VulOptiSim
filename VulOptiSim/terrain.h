@@ -7,15 +7,34 @@
 #include <glm/glm.hpp>
 #include "renderer.h"
 
+/*
 // Hash functie voor glm::ivec2 zodat unordered_set en unordered_map sneller werken
 struct IVec2Hash {
     std::size_t operator()(const glm::ivec2& v) const noexcept {
         return std::hash<int>()(v.x) ^ (std::hash<int>()(v.y) << 1);
     }
 };
+*/
+
+struct IVec2Hash {
+    // Vervangt std::hash met snelle spatial bit-mixing voor 2D grids
+    inline size_t operator()(const glm::ivec2& v) const noexcept {
+        const uint32_t x = static_cast<uint32_t>(v.x);
+        const uint32_t y = static_cast<uint32_t>(v.y);
+        return static_cast<size_t>((x * 73856093) ^ (y * 19349663));
+    }
+};
+
+struct TerrainChunk {
+    uint32_t gpu_handle = 0; // Dit vervangt de volledige vector<mat4> in RAM!
+    
+    glm::vec2 center;
+    float radius;
+    bool is_empty = false;
+};
 
 class Terrain
-{
+{    
 public:
     enum class Terrain_Types
     {
@@ -29,7 +48,7 @@ public:
     Terrain(const std::filesystem::path& path_to_height_map);
 
     void initialize(vulvox::Renderer* renderer);
-    void draw(vulvox::Renderer* renderer, const glm::vec3& camera_position) const;
+    void draw(vulvox::Renderer* renderer, const glm::vec3& camera_position, const glm::mat4& view_proj) const;
     
     // EXTREEM SNEL: Geen bounds check, gebruikt vermenigvuldiging ipv deling
     inline float get_height_fast(const glm::vec2& pos) const 
@@ -92,16 +111,7 @@ private:
     bool is_accessible(const glm::ivec2& tile, const glm::ivec2& from) const;
     
     bool is_initialized = false;
-    
-    struct TerrainChunk {
-        // Terug naar jouw werkende systeem! Geen gpu_handle meer.
-        std::vector<glm::mat4> terrain_transforms;
-        std::vector<uint32_t> texture_indices;
-        
-        glm::vec2 center;       // Voor snelle afstand- of culling checks
-        float radius;           // Bounding sphere radius van deze chunk
-        bool is_empty = false;
-    };
+   
 
     std::vector<TerrainChunk> chunks;
     const int CHUNK_SIZE = 64; // 64x64 tiles per chunk
@@ -122,9 +132,4 @@ private:
     inline int get_tile_index(const int x, const int y) const {
         return (y * map_width) + x;
     }
-    
-    // --- CPU CACHE ---
-    mutable std::vector<size_t> last_visible_chunks;
-    mutable std::vector<glm::mat4> cached_visible_transforms;
-    mutable std::vector<uint32_t> cached_visible_texture_indices;
 };

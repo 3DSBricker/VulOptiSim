@@ -96,18 +96,21 @@ namespace vulvox
         vulkan_engine->draw_model_with_texture_array(model_name, texture_array_name, texture_index, model_matrix);
     }
     
-    uint32_t Renderer::register_static_instances(const std::vector<Vulkan_Engine::TerrainInstanceData>& instance_data)
+    void Renderer::draw_static_instance_group(StaticInstanceHandle handle)
     {
-        // Stuur door naar de echte Vulkan engine backend
-        return vulkan_engine->register_static_instances(instance_data);
+        vulkan_engine->draw_static_instance_group(handle);
+    }
+    
+    void Renderer::destroy_static_instance_group(StaticInstanceHandle handle)
+    {
+        vulkan_engine->destroy_static_instance_group(handle);
     }
 
-    void Renderer::draw_static_instanced(const std::string& texture_array_name, Vulkan_Engine::StaticInstanceHandle handle)
+    StaticInstanceHandle Renderer::create_static_instance_group(const std::string& model_name, const std::string& texture_array_name, const std::vector<glm::mat4>& transforms, const std::vector<uint32_t>& texture_indices)
     {
-        // Stuur de draw call door naar de echte Vulkan engine backend
-        vulkan_engine->draw_static_instanced(texture_array_name, handle);
+        return vulkan_engine->create_static_instance_group(model_name, texture_array_name, transforms, texture_indices);
     }
-
+    
     void Renderer::draw_batch(const std::string& model_name, const std::string& texture_name, const std::vector<glm::mat4>& transforms)
     {
         vulkan_engine->draw_batch(model_name, texture_name, transforms);;

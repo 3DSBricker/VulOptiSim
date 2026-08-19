@@ -55,6 +55,10 @@
 #include "shield.h"
 #include "lightning.h"
 #include "projectile.h"
+#include "algo_utils.h"
+#include "math_utils.h"
+#include "geo_utils.h"
+
 
 
 const std::filesystem::path TERRAIN_PATH = "../models/map.png";
