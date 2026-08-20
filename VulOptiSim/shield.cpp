@@ -27,6 +27,10 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
     const size_t count = hero_system.size();
     if (count == 0) {
         convex_hull_points.clear();
+        if (last_logged_hull_size != 0) {
+            Log::get_instance()->add_log("[Shield] No heroes available; shield hull cleared.\n");
+            last_logged_hull_size = 0;
+        }
         return;
     }
 
@@ -40,7 +44,11 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
 
     if (pool && count > 1000) {
         size_t thread_count = pool->thread_count();
-        std::vector<ExtremaChunk> chunks(thread_count);
+        const size_t target_chunks = thread_count * 8; // Match de factor uit de threadpool!
+        const size_t chunk_size = std::max<size_t>(1, count / target_chunks);
+        const size_t total_chunks = (count + chunk_size - 1) / chunk_size;
+
+        std::vector<ExtremaChunk> chunks(total_chunks); // Safe voor elke chunk_id!
 
         pool->parallel_for_chunked(count, [&](size_t i, size_t chunk_id) {
             if (active_ptr[i] && mana_ptr[i] > 0) {
@@ -127,6 +135,10 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
 
     if (!global_extrema.has_points) {
         convex_hull_points.clear();
+        if (last_logged_hull_size != 0) {
+            Log::get_instance()->add_log("[Shield] No valid shield points found; hull cleared.\n");
+            last_logged_hull_size = 0;
+        }
         return;
     }
 
@@ -157,6 +169,16 @@ void Shield::update(const HeroSystem& hero_system, ThreadPool* pool)
 
     min_bounds -= glm::vec2(2.f);
     max_bounds += glm::vec2(2.f);
+
+    if (convex_hull_points.size() != last_logged_hull_size) {
+        Log::get_instance()->add_log(
+            "[Shield] Hull updated: %zu edges, height range [%f, %f].\n",
+            convex_hull_points.size(),
+            min_height,
+            max_height
+        );
+        last_logged_hull_size = convex_hull_points.size();
+    }
 }
 
 
@@ -261,48 +283,24 @@ void Shield::draw(vulvox::Renderer* renderer) const
     renderer->draw_planes(texture_name, transforms, texture_indices, uvs);
 }
 
-bool Shield::intersects(const glm::vec2& circle_center, float radius) const
-{
-    if (convex_hull_points.size() < 2) return false;
-
-    // Snelle Culling: Stop direct als het projectiel mijlenver weg is
-    if (circle_center.x + radius < min_bounds.x || circle_center.x - radius > max_bounds.x ||
-        circle_center.y + radius < min_bounds.y || circle_center.y - radius > max_bounds.y) {
-        return false; 
-        }
-
-    for (size_t i = 0; i < convex_hull_points.size(); i++)
-    {
-        glm::vec2 A = convex_hull_points[i];
-        glm::vec2 B = convex_hull_points[(i + 1) % convex_hull_points.size()];
-
-        glm::vec2 AB = B - A;
-        float t = glm::dot(circle_center - A, AB) / glm::dot(AB, AB);
-        t = glm::clamp(t, 0.0f, 1.0f); 
-
-        glm::vec2 closest_point = A + t * AB;
-        glm::vec2 diff = circle_center - closest_point;
-
-        if ((diff.x * diff.x + diff.y * diff.y) <= (radius * radius))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const
 {
-    // Bewaar indices (size_t) in plaats van pointers (Hero*)
     std::vector<size_t> closest_heroes;
     std::vector<float> closest_distances(n_to_sustain, math_utils::FLT_MAX_VAL);
 
-    for (size_t i = 0; i < hero_system.size(); i++)
-    {
-        if (!hero_system.active[i]) continue;
+    const size_t count = hero_system.size();
+    const uint8_t* active_ptr = hero_system.active.data();
+    const float* px_ptr = hero_system.pos_x.data();
+    const float* pz_ptr = hero_system.pos_z.data();
 
-        glm::vec2 pos2d(hero_system.pos_x[i], hero_system.pos_z[i]);
-        float distance_squared = glm::length2(pos2d - point);
+    for (size_t i = 0; i < count; i++)
+    {
+        if (!active_ptr[i]) continue;
+
+        // Geen glm::length2, pure scalars
+        const float dx = px_ptr[i] - point.x;
+        const float dz = pz_ptr[i] - point.y;
+        const float distance_squared = (dx * dx) + (dz * dz);
 
         if (closest_heroes.size() < n_to_sustain)
         {
@@ -312,26 +310,65 @@ void Shield::absorb(HeroSystem& hero_system, glm::vec2 point) const
         else
         {
             size_t farthest = 0;
-            for (size_t j = 1; j < closest_heroes.size(); j++)
-            {
-                if (closest_distances[farthest] < closest_distances[j])
-                {
+            float max_dist = closest_distances[0];
+            
+            // Loop unrolling for kleine n_to_sustain als dit een bekende kleine const is, anders:
+            for (size_t j = 1; j < closest_heroes.size(); j++) {
+                if (max_dist < closest_distances[j]) {
                     farthest = j;
+                    max_dist = closest_distances[j];
                 }
             }
 
-            if (distance_squared < closest_distances[farthest])
+            if (distance_squared < max_dist)
             {
                 closest_heroes[farthest] = i;
                 closest_distances[farthest] = distance_squared;
             }
         }
     }
-
+    
+    Log::get_instance()->add_log("[Shield] Absorbed mana from %zu closest heroes.\n", closest_heroes.size());
     for (size_t index : closest_heroes)
     {
         hero_system.drain_mana(index, mana_cost);
     }
+}
+
+bool Shield::intersects(const glm::vec2& circle_center, float radius) const
+{
+    if (convex_hull_points.size() < 2) return false;
+
+    if (circle_center.x + radius < min_bounds.x || circle_center.x - radius > max_bounds.x ||
+        circle_center.y + radius < min_bounds.y || circle_center.y - radius > max_bounds.y) {
+        return false; 
+    }
+
+    const float rad_sq = radius * radius;
+
+    for (size_t i = 0; i < convex_hull_points.size(); i++)
+    {
+        glm::vec2 A = convex_hull_points[i];
+        glm::vec2 B = convex_hull_points[(i + 1) % convex_hull_points.size()];
+
+        float ab_x = B.x - A.x;
+        float ab_y = B.y - A.y;
+        
+        float t = ((circle_center.x - A.x) * ab_x + (circle_center.y - A.y) * ab_y) / (ab_x * ab_x + ab_y * ab_y);
+        t = math_utils::clamp(t, 0.0f, 1.0f); // Fast math_utils clamp ipv std/glm
+
+        float closest_x = A.x + t * ab_x;
+        float closest_y = A.y + t * ab_y;
+        
+        float diff_x = circle_center.x - closest_x;
+        float diff_y = circle_center.y - closest_y;
+
+        if ((diff_x * diff_x + diff_y * diff_y) <= rad_sq)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// <summary>

@@ -15,6 +15,7 @@
 #include <thread>
 #include <future>
 #include <mutex>
+#include <chrono>
 
 //GLFW & Vulkan
 //#define GLFW_INCLUDE_VULKAN
@@ -58,6 +59,8 @@
 #include "algo_utils.h"
 #include "math_utils.h"
 #include "geo_utils.h"
+#include "log.h"
+
 
 
 

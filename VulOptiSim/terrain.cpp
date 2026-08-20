@@ -64,8 +64,13 @@ public:
 
 Terrain::Terrain(const std::filesystem::path& path_to_height_map)
 {
+    const auto path_text = path_to_height_map.string();
+    Log::get_instance()->add_log("[Terrain] Loading height map: %s\n", path_text.c_str());
     map_data = read_map_file(path_to_height_map, map_width, map_length);
-    if (map_data.empty()) return;
+    if (map_data.empty()) {
+        Log::get_instance()->add_log("[Terrain] Height map load failed or produced no data: %s\n", path_text.c_str());
+        return;
+    }
 
     terrain_width = static_cast<float>(map_width) * tile_width;
     terrain_length = static_cast<float>(map_length) * tile_length;
@@ -91,13 +96,22 @@ Terrain::Terrain(const std::filesystem::path& path_to_height_map)
             else tile_types.push_back(Terrain_Types::Stone);
         }
     }
+
+    Log::get_instance()->add_log(
+        "[Terrain] Height map loaded: %dx%d tiles, world size %.2fx%.2f.\n",
+        map_width,
+        map_length,
+        terrain_width,
+        terrain_length
+    );
 }
 
 void Terrain::initialize(vulvox::Renderer* renderer)
 {
-    std::cout << "TERRAIN INITIALIZE CHUNKS (Static GPU Path)\n";
+    auto init_start = std::chrono::high_resolution_clock::now();
     int chunks_x = (map_width + CHUNK_SIZE - 1) / CHUNK_SIZE;
     int chunks_z = (map_length + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    size_t non_empty_chunks = 0;
 
     int lowest = math_utils::INT_MAX_VAL;
     for (const auto& tile : map_data) {
@@ -181,8 +195,22 @@ void Terrain::initialize(vulvox::Renderer* renderer)
             }
 
             chunks.push_back(chunk);
+            if (!chunk.is_empty) {
+                non_empty_chunks++;
+            }
         }
     }
+
+    is_initialized = true;
+
+    auto init_end = std::chrono::high_resolution_clock::now();
+    const float init_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(init_end - init_start).count();
+    Log::get_instance()->add_log(
+        "[Terrain] Initialized %zu chunks (%zu populated) in %f ms.\n",
+        chunks.size(),
+        non_empty_chunks,
+        init_duration
+    );
 }
 
 void Terrain::draw(vulvox::Renderer* renderer, const glm::vec3& camera_position, const glm::mat4& view_proj) const
@@ -270,7 +298,10 @@ std::vector<glm::vec2> Terrain::find_route(const glm::vec2& start_position, cons
         }
     }
 
-    if (!found) return {};
+    if (!found) {
+        Log::get_instance()->add_log("[Terrain/Pathing] Waarschuwing: Geen route gevonden vanaf positie index %d naar %d!\n", start_idx, target_idx);
+        return {};
+    }
 
     // Reconstruct route
     std::vector<glm::vec2> path;
@@ -284,6 +315,13 @@ std::vector<glm::vec2> Terrain::find_route(const glm::vec2& start_position, cons
         );
         curr = parent_map[curr];
     }
+
+    Log::get_instance()->add_log(
+        "[Terrain/Pathing] Route found from %d to %d with %zu nodes.\n",
+        start_idx,
+        target_idx,
+        path.size()
+    );
 
     return path;
 }
@@ -338,9 +376,13 @@ bool Terrain::is_accessible(const glm::ivec2& tile, const glm::ivec2& from) cons
 std::vector<Terrain::Tile_Data> Terrain::read_map_file(const std::filesystem::path& path_to_height_map, int& map_width, int& map_length) const
 {
     int channels, image_width, image_height;
-    unsigned char* image_data = stbi_load(path_to_height_map.string().c_str(), &image_width, &image_height, &channels, 4);
+    const auto path_text = path_to_height_map.string();
+    unsigned char* image_data = stbi_load(path_text.c_str(), &image_width, &image_height, &channels, 4);
 
-    if (!image_data) return {};
+    if (!image_data) {
+        Log::get_instance()->add_log("[Terrain] stbi_load failed for: %s\n", path_text.c_str());
+        return {};
+    }
 
     map_width = image_width;
     map_length = image_height;
@@ -362,5 +404,12 @@ std::vector<Terrain::Tile_Data> Terrain::read_map_file(const std::filesystem::pa
     }
 
     stbi_image_free(image_data);
+    Log::get_instance()->add_log(
+        "[Terrain] Read map file %s (%dx%d, %d channels).\n",
+        path_text.c_str(),
+        image_width,
+        image_height,
+        channels
+    );
     return map_tiles;
 }

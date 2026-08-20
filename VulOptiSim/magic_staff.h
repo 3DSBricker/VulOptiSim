@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 class Magic_Staff
 {
 public:
@@ -46,4 +48,6 @@ private:
     Transform transform;
 
     const Terrain* terrain;
+    bool last_logged_target_state = false;
+    size_t last_logged_target_index = std::numeric_limits<size_t>::max();
 };

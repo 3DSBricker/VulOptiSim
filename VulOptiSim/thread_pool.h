@@ -3,29 +3,31 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <functional>
+#include <future>
+#include <memory>
+#include <type_traits>
+#include <immintrin.h>
 #include <mutex>
 #include <condition_variable>
-#include <immintrin.h>
-
-#include "algo_utils.h"
 #include "math_utils.h"
-
-// Thread-local opslag voor instant worker lookup (0 ns runtime overhead)
-inline thread_local size_t g_worker_id = static_cast<size_t>(-1);
+#include "algo_utils.h"
+#include "log.h"
 
 class ThreadPool
 {
 public:
-    ThreadPool(size_t num_threads = std::thread::hardware_concurrency()) 
+    ThreadPool(size_t num_threads = math_utils::max<size_t>(1, std::thread::hardware_concurrency())) 
         : workers(num_threads) 
     {
+        Log::get_instance()->add_log("[ThreadPool] Initializing %zu worker threads.\n", num_threads);
         for (size_t i = 0; i < num_threads; ++i) {
-            // Geef de index mee aan de worker_loop om g_worker_id in te stellen
             workers[i].thread = std::thread(&ThreadPool::worker_loop, this, i);
         }
     }
     
     ~ThreadPool() {
+        Log::get_instance()->add_log("[ThreadPool] Shutting down %zu worker threads.\n", workers.size());
         stop.store(true, std::memory_order_release);
         condition.notify_all();
     
@@ -36,213 +38,297 @@ public:
         }
     }
 
-    [[nodiscard]] size_t thread_count() const noexcept {
+    [[nodiscard]] size_t thread_count() const
+    {
         return workers.size();
     }
     
-    // Snelle O(1) worker ID getter zonder hashing of modulo
-    [[nodiscard]] size_t get_current_worker_id() const noexcept {
-        return g_worker_id;
-    }
-    
-    // Type-erased Job structuur ZONDER virtuele functies (vtable)
-    struct Job {
-        void (*execute_func)(void* user_data) = nullptr;
-        void* user_data = nullptr;
-        alignas(64) std::atomic<size_t> current_chunk{0};
-        size_t count = 0;
-        size_t chunk_size = 0;
-        size_t total_chunks = 0;
-        alignas(64) std::atomic<size_t> unfinished_chunks{0};
-
-        [[nodiscard]] bool is_finished() const noexcept {
-            return unfinished_chunks.load(std::memory_order_relaxed) == 0;
-        }
-
-        void execute_chunk() noexcept {
-            size_t chunk_id = current_chunk.fetch_add(1, std::memory_order_relaxed);
-            if (chunk_id < total_chunks) {
-                execute_func(user_data);
-                unfinished_chunks.fetch_sub(1, std::memory_order_release);
-            }
-        }
-    };
-
     template<typename Func>
     void parallel_for(size_t count, Func&& func)
     {
         if (count == 0) return;
 
-        if (count < workers.size() * 4) {
-            for (size_t i = 0; i < count; ++i) {
+        const size_t num_workers = workers.size();
+        if (count < num_workers * 4) {
+            for (size_t i = 0; i < count; i++) {
                 func(i);
             }
             return;
         }
 
-        const size_t num_workers = workers.size();
+        std::lock_guard<std::mutex> lock(parallel_mutex);
+
         const size_t chunk_size = math_utils::max<size_t>(1, count / (num_workers * 8));
         const size_t total_chunks = (count + chunk_size - 1) / chunk_size;
 
-        // Context struct op de STACK van de caller (0 heap allocaties)
-        struct Context {
-            Func* func_ptr;
-            size_t count;
-            size_t chunk_size;
-            size_t total_chunks;
-        } ctx { &func, count, chunk_size, total_chunks };
-
-        Job job;
-        job.user_data = &ctx;
-        job.count = count;
-        job.chunk_size = chunk_size;
-        job.total_chunks = total_chunks;
-        job.unfinished_chunks.store(total_chunks, std::memory_order_relaxed);
-        
-        // C-style function pointer wrapper voorkomt vtable overhead
-        job.execute_func = [](void* data) {
-            auto* c = static_cast<Context*>(data);
-            // Haal huidig chunk_id veilig op via de Job struct
-            // We berekenen de start en end indices op basis van chunk_id
-        };
-
-        // Geoptimaliseerde parallel execution context
-        execute_job_parallel(job, ctx);
+        dispatch_job(count, chunk_size, total_chunks, std::forward<Func>(func));
     }
-
+    
     template<typename Func>
     void parallel_for_chunked(size_t count, Func&& func)
     {
         if (count == 0) return;
 
-        const size_t thread_cnt = workers.size();
-        if (count < thread_cnt * 4) {
-            for (size_t i = 0; i < count; ++i) {
+        const size_t num_workers = workers.size();
+        if (count < num_workers * 4) {
+            for (size_t i = 0; i < count; i++) {
                 func(i, 0); 
             }
             return;
         }
 
-        const size_t chunk_size = (count + thread_cnt - 1) / thread_cnt;
+        std::lock_guard<std::mutex> lock(parallel_mutex);
+        
+        const size_t target_chunks = num_workers * 8; 
+        const size_t chunk_size = math_utils::max<size_t>(1, count / target_chunks);
         const size_t total_chunks = (count + chunk_size - 1) / chunk_size;
 
-        struct Context {
-            Func* func_ptr;
-            size_t count;
-            size_t chunk_size;
-        } ctx { &func, count, chunk_size };
+        dispatch_job(count, chunk_size, total_chunks, std::forward<Func>(func));
+    }
+    
+    template<typename Func>
+    void parallel_for_blocks(size_t count, size_t block_size, Func&& func)
+    {
+        if (count == 0) return;
 
-        Job job;
-        job.user_data = &ctx;
-        job.count = count;
-        job.chunk_size = chunk_size;
-        job.total_chunks = total_chunks;
-        job.unfinished_chunks.store(total_chunks, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(parallel_mutex);
+        
+        // Bereken hoeveel blokken we totaal hebben
+        const size_t total_chunks = (count + block_size - 1) / block_size;
 
-        execute_job_chunked_parallel(job, ctx);
+        dispatch_job_blocks(count, block_size, total_chunks, std::forward<Func>(func));
+    }
+
+    template <class T>
+    [[nodiscard]] auto enqueue(T task) -> std::future<decltype(task())>
+    {
+        using RetType = decltype(task());
+        auto promise = std::make_shared<std::promise<RetType>>();
+        auto future = promise->get_future();
+
+        auto wrapper = [task = algo_utils::move(task), promise]() mutable {
+            try {
+                if constexpr (std::is_void_v<RetType>) {
+                    task();
+                    promise->set_value();
+                } else {
+                    promise->set_value(task());
+                }
+            } catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        };
+
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            tasks.push_back(algo_utils::move(wrapper));
+            has_tasks.store(true, std::memory_order_release);
+        }
+        condition.notify_one();
+        return future;
     }
 
 private:
-    struct alignas(64) Worker {
-        std::thread thread;
+    struct ParallelJob {
+        alignas(64) std::atomic<size_t> next_chunk{0};
+        size_t total_chunks{0};
+        size_t chunk_size{0};
+        size_t count{0};
+        void* func_ptr{nullptr};
+        void (*execute)(void* f, size_t start, size_t end, size_t chunk_id){nullptr};
     };
 
-    template<typename Func, typename Context>
-    void execute_job_parallel(Job& job, Context& ctx) {
-        job.execute_func = [](void* data) {
-            // Cast context terug
-            // Noot: In-place verwerking om std::function te vermijden
+    struct alignas(64) Worker {
+        std::thread thread;
+        alignas(64) std::atomic<ParallelJob*> current_job{nullptr};
+    };
+    
+    template<typename Func>
+    void dispatch_job_blocks(size_t count, size_t chunk_size, size_t total_chunks, Func&& func)
+    {
+        using RawFunc = std::remove_reference_t<Func>;
+
+        ParallelJob job;
+        job.next_chunk.store(0, std::memory_order_relaxed);
+        job.total_chunks = total_chunks;
+        job.chunk_size = chunk_size;
+        job.count = count;
+        job.func_ptr = (void*)&func;
+        
+        // HET GROTE VERSCHIL: Geen for-loop hier! 
+        // We geven de ruwe start en end index direct aan jouw lambda.
+        job.execute = [](void* f, size_t start, size_t end, size_t /*chunk_id*/) {
+            auto& fn = *static_cast<RawFunc*>(f);
+            fn(start, end); 
         };
 
-        // Interne dispatcher logica
-        dispatch_job(&job, [&ctx](size_t i, size_t chunk_id) {
-            (*ctx.func_ptr)(i);
-        });
-    }
+        active_job.store(&job, std::memory_order_release);
 
-    template<typename Func, typename Context>
-    void execute_job_chunked_parallel(Job& job, Context& ctx) {
-        dispatch_job(&job, [&ctx](size_t i, size_t chunk_id) {
-            (*ctx.func_ptr)(i, chunk_id);
-        });
-    }
-
-    template<typename Lambda>
-    void dispatch_job(Job* job, Lambda&& loop_body) {
-        struct HelperContext {
-            Job* job_ptr;
-            Lambda* lambda_ptr;
-        } h_ctx { job, &loop_body };
-
-        job->execute_func = [](void* data) {
-            auto* hc = static_cast<HelperContext*>(data);
-            Job* j = hc->job_ptr;
-            
-            size_t chunk_id = j->current_chunk.fetch_add(1, std::memory_order_relaxed);
-            if (chunk_id < j->total_chunks) {
-                size_t start = chunk_id * j->chunk_size;
-                size_t end = math_utils::min(start + j->chunk_size, j->count);
-
-                for (size_t i = start; i < end; ++i) {
-                    (*hc->lambda_ptr)(i, chunk_id);
-                }
-            }
-        };
-
-        job->user_data = &h_ctx;
-
-        // Publiceer de job aan alle workers
-        active_job.store(job, std::memory_order_release);
-
-        // Hoofdthread helpt DIRECT mee totdat alle chunks gereserveerd zijn
-        while (job->current_chunk.load(std::memory_order_relaxed) < job->total_chunks) {
-            job->execute_chunk();
+        if (sleeping_workers.load(std::memory_order_relaxed) > 0) {
+            condition.notify_all();
         }
 
-        // Spin-wait met _mm_pause tot alle workers hun werk fysiek afgerond hebben
-        while (!job->is_finished()) {
-            _mm_pause();
+        // Caller-thread helpt direct mee
+        while (true) {
+            size_t chunk_id = job.next_chunk.fetch_add(1, std::memory_order_relaxed);
+            if (chunk_id >= job.total_chunks) break;
+            size_t start = chunk_id * job.chunk_size;
+            size_t end = math_utils::min(start + job.chunk_size, job.count);
+            job.execute(job.func_ptr, start, end, chunk_id);
         }
 
         active_job.store(nullptr, std::memory_order_release);
+
+        // Wacht tot alle workers klaar zijn
+        for (size_t i = 0; i < workers.size(); ++i) {
+            while (workers[i].current_job.load(std::memory_order_acquire) == &job) {
+                _mm_pause();
+            }
+        }
     }
 
-    void worker_loop(size_t worker_index)
+    template<typename Func>
+    void dispatch_job(size_t count, size_t chunk_size, size_t total_chunks, Func&& func)
     {
-        // 1. Sla het worker ID op in de thread_local variabele!
-        g_worker_id = worker_index;
+        using RawFunc = std::remove_reference_t<Func>;
 
-        uint32_t idle_counter = 0;
-        while (!stop.load(std::memory_order_relaxed))
-        {
-            Job* current = active_job.load(std::memory_order_acquire);
-            if (current != nullptr) {
-                idle_counter = 0;
-                if (!current->is_finished()) {
-                    current->execute_chunk();
-                    continue;
+        ParallelJob job;
+        job.next_chunk.store(0, std::memory_order_relaxed);
+        job.total_chunks = total_chunks;
+        job.chunk_size = chunk_size;
+        job.count = count;
+        job.func_ptr = (void*)&func;
+        job.execute = [](void* f, size_t start, size_t end, size_t chunk_id) {
+            auto& fn = *static_cast<RawFunc*>(f);
+            for (size_t i = start; i < end; ++i) {
+                if constexpr (std::is_invocable_v<RawFunc, size_t, size_t>) {
+                    fn(i, chunk_id);
+                } else {
+                    fn(i);
                 }
             }
+        };
 
-            // Spin-wait fase
-            if (idle_counter < 4000) {
-                idle_counter++;
+        active_job.store(&job, std::memory_order_release);
+
+        if (sleeping_workers.load(std::memory_order_relaxed) > 0) {
+            condition.notify_all();
+        }
+
+        // Caller-thread helpt direct mee chunks verwerken
+        while (true) {
+            size_t chunk_id = job.next_chunk.fetch_add(1, std::memory_order_relaxed);
+            if (chunk_id >= job.total_chunks) break;
+            size_t start = chunk_id * job.chunk_size;
+            size_t end = math_utils::min(start + job.chunk_size, job.count);
+            job.execute(job.func_ptr, start, end, chunk_id);
+        }
+
+        // Trek de actieve job in
+        active_job.store(nullptr, std::memory_order_release);
+
+        // Wacht tot alle workers die aan DEZE specifieke job werkten klaar zijn
+        for (size_t i = 0; i < workers.size(); ++i) {
+            while (workers[i].current_job.load(std::memory_order_acquire) == &job) {
+                _mm_pause();
+            }
+        }
+    }
+
+    void worker_loop(size_t worker_id)
+    {
+        uint32_t spin_count = 0;
+
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            ParallelJob* job = active_job.load(std::memory_order_acquire);
+            if (job != nullptr) {
+                spin_count = 0;
+                workers[worker_id].current_job.store(job, std::memory_order_release);
+
+                if (active_job.load(std::memory_order_acquire) == job) {
+                    while (true) {
+                        size_t chunk_id = job->next_chunk.fetch_add(1, std::memory_order_relaxed);
+                        if (chunk_id >= job->total_chunks) break;
+                        size_t start = chunk_id * job->chunk_size;
+                        size_t end = math_utils::min(start + job->chunk_size, job->count);
+                        job->execute(job->func_ptr, start, end, chunk_id);
+                    }
+                }
+
+                workers[worker_id].current_job.store(nullptr, std::memory_order_release);
                 _mm_pause();
                 continue;
             }
 
-            // Back-off / Sleep fase bij langdurige inactiviteit
+            // Controleer gewone taak-queue
+            if (has_tasks.load(std::memory_order_relaxed)) {
+                std::function<void()> task;
+                {
+                    std::lock_guard<std::mutex> lock(queue_mutex);
+                    if (task_head < tasks.size()) {
+                        task = algo_utils::move(tasks[task_head++]);
+                        if (task_head == tasks.size()) {
+                            tasks.clear();
+                            task_head = 0;
+                            has_tasks.store(false, std::memory_order_relaxed);
+                        }
+                    } else {
+                        has_tasks.store(false, std::memory_order_relaxed);
+                    }
+                }
+                if (task) {
+                    spin_count = 0;
+                    activeThreads.fetch_add(1, std::memory_order_relaxed);
+                    task();
+                    activeThreads.fetch_sub(1, std::memory_order_relaxed);
+                    continue;
+                }
+            }
+
+            // Hybride spin-backoff voor minimale latency
+            if (spin_count < 2000) {
+                _mm_pause();
+                spin_count++;
+                continue;
+            } else if (spin_count < 4000) {
+                std::this_thread::yield();
+                spin_count++;
+                continue;
+            }
+
+            // Kernel-level sleep fallback om 100% CPU-burn bij inactiviteit te voorkomen
             std::unique_lock<std::mutex> lock(queue_mutex);
-            condition.wait_for(lock, std::chrono::microseconds(50), [this] {
-                return stop.load(std::memory_order_relaxed) || active_job.load(std::memory_order_relaxed) != nullptr;
+            if (stop.load(std::memory_order_relaxed) ||
+                active_job.load(std::memory_order_relaxed) != nullptr ||
+                task_head < tasks.size()) {
+                continue;
+            }
+
+            sleeping_workers.fetch_add(1, std::memory_order_relaxed);
+            condition.wait(lock, [this] {
+                return stop.load(std::memory_order_relaxed) ||
+                       task_head < tasks.size() ||
+                       active_job.load(std::memory_order_relaxed) != nullptr;
             });
-            idle_counter = 0;
+            sleeping_workers.fetch_sub(1, std::memory_order_relaxed);
+            spin_count = 0;
         }
     }
 
     std::vector<Worker> workers;
+    
+    std::vector<std::function<void()>> tasks;
+    size_t task_head = 0;
+    alignas(64) std::atomic<bool> has_tasks{false};
+
     alignas(64) std::mutex queue_mutex;
     std::condition_variable condition;
+
     alignas(64) std::atomic<bool> stop{false};
-    alignas(64) std::atomic<Job*> active_job{nullptr};
+    alignas(64) std::atomic<int> activeThreads{0};
+    alignas(64) std::atomic<int> sleeping_workers{0};
+    
+    std::mutex parallel_mutex;
+    alignas(64) std::atomic<ParallelJob*> active_job{nullptr};
 };

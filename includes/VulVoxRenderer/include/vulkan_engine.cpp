@@ -3,7 +3,7 @@
 
 namespace vulvox
 {
-    const int Vulkan_Engine::MAX_FRAMES_IN_FLIGHT = 2;
+    const int Vulkan_Engine::MAX_FRAMES_IN_FLIGHT = 3;
 
 
     Vulkan_Engine::Vulkan_Engine() : swap_chain(&vulkan_instance)

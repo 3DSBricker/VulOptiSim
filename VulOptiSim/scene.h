@@ -19,8 +19,8 @@ public:
 
     void load_models_and_textures() const;
     void load_effects() const;
-    void load_animation_effects() const;
-    void spawn_heroes();
+    void load_animation_effects();
+    void spawn_hero_area(size_t s);
     void spawn_staves();
 
     size_t get_character_count() const;
@@ -36,6 +36,7 @@ private:
     bool follow_mode = false;
     bool show_debug_windows = false;
     bool f1_was_pressed = false;
+    bool tab_was_pressed = false;
     size_t update_frame = 0;
     size_t draw_frame = 0;
     

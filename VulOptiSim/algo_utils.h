@@ -19,6 +19,27 @@ namespace algo_utils {
             _mm256_storeu_ps(d + i + 8, _mm256_loadu_ps(s + i + 8));
         }
     }
+    
+    // Helper template om referenties te strippen (vervangt std::remove_reference)
+    // Nodig om te voorkomen dat we per ongeluk een lvalue reference teruggeven.
+    template<typename T> struct remove_reference { typedef T type; };
+    template<typename T> struct remove_reference<T&> { typedef T type; };
+    template<typename T> struct remove_reference<T&&> { typedef T type; };
+
+    // Exacte, zero-overhead vervanger voor std::move
+    // constexpr en noexcept zorgen voor maximale optimalisatie (0 instructies)
+    template<typename T>
+    constexpr typename remove_reference<T>::type&& move(T&& arg) noexcept {
+        return static_cast<typename remove_reference<T>::type&&>(arg);
+    }
+    
+    // Custom std::swap (geüpdatet met je eigen move)
+    template<typename T>
+    inline void swap(T& a, T& b) noexcept {
+        T temp = algo_utils::move(a);
+        a = algo_utils::move(b);
+        b = algo_utils::move(temp);
+    }
 
     // Volledig handgeschreven AVX2 memory copy zonder std::memcpy
     template<typename T>
@@ -54,14 +75,6 @@ namespace algo_utils {
             if (a_ptr[i] != b_ptr[i]) return false;
         }
         return true;
-    }
-    
-    // Custom std::swap
-    template<typename T>
-    inline void swap(T& a, T& b) noexcept {
-        T temp = static_cast<T&&>(a);
-        a = static_cast<T&&>(b);
-        b = static_cast<T&&>(temp);
     }
 
     // Handgeschreven Quicksort

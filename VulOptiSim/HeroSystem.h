@@ -192,6 +192,101 @@ struct HeroSystem {
         pending_adds.clear();
     }
     
+    // Voeg dit toe in hero_system.h en verwijder de oude update_hero
+    void update_heroes_batch(size_t start, size_t end, float delta_time, const Terrain& terrain, uint32_t phase) 
+    {
+        const float tile_w_sq = terrain.tile_width * terrain.tile_width;
+
+        // __restrict vertelt de compiler: "Deze pointers overlappen niet". 
+        // Dit is de sleutel tot brute auto-vectorization en register-caching.
+        const uint8_t* __restrict act_ptr = active.data();
+        float* __restrict px_ptr = pos_x.data();
+        float* __restrict pz_ptr = pos_z.data();
+        float* __restrict py_ptr = pos_y.data();
+        glm::vec2* __restrict dir_ptr = direction.data();
+        const float* __restrict spd_ptr = speed.data();
+        glm::vec2* __restrict frc_ptr = force.data();
+        const std::vector<glm::vec2>** __restrict route_ptrs = route_ptr.data();
+        int* __restrict r_idx_ptr = route_index.data();
+
+        for (size_t i = start; i < end; ++i) 
+        {
+            if (!act_ptr[i]) continue;
+
+            // 1. Laad data naar CPU registers
+            float px = px_ptr[i] + frc_ptr[i].x;
+            float pz = pz_ptr[i] + frc_ptr[i].y;
+            frc_ptr[i] = {0.f, 0.f}; // Clear force
+
+            float distance = delta_time * spd_ptr[i];
+            int curr_idx = r_idx_ptr[i];
+            const std::vector<glm::vec2>* my_route = route_ptrs[i];
+
+            if (my_route && curr_idx >= 0) 
+            {
+                // Rauwe data pointer ipv vector operaties in de loop
+                const glm::vec2* route_data = my_route->data();
+                const int route_size = static_cast<int>(my_route->size());
+
+                if (curr_idx < route_size) 
+                {
+                    float dir_x = dir_ptr[i].x;
+                    float dir_y = dir_ptr[i].y;
+
+                    // 2. Reken alles uit puur in local floats (0 RAM writes tijdens de loop)
+                    while (curr_idx >= 0 && distance > 0.f) 
+                    {
+                        const glm::vec2& target = route_data[curr_idx];
+                        float dx = target.x - px;
+                        float dy = target.y - pz;
+                        float dist_sq = (dx * dx) + (dy * dy);
+
+                        if (dist_sq > 0.00001f) 
+                        {
+                            float inv_dist = math_utils::fast_inv_sqrt(dist_sq);
+                            float dist = dist_sq * inv_dist;
+                            dir_x = dx * inv_dist;
+                            dir_y = dy * inv_dist;
+
+                            if (dist > distance) {
+                                px += distance * dir_x;
+                                pz += distance * dir_y;
+                                distance = 0.f;
+                            } else {
+                                px = target.x;
+                                pz = target.y;
+                                distance -= dist;
+                            }
+                        } else {
+                            distance = 0.f;
+                        }
+
+                        float diff_x = target.x - px;
+                        float diff_y = target.y - pz;
+                        if ((diff_x * diff_x + diff_y * diff_y) < tile_w_sq) {
+                            curr_idx--;
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    // 3. Schrijf state slechts 1x terug naar geheugen
+                    r_idx_ptr[i] = curr_idx;
+                    dir_ptr[i] = {dir_x, dir_y};
+                }
+            }
+
+            // 4. Update posities
+            px_ptr[i] = px;
+            pz_ptr[i] = pz;
+
+            // 5. Y-as berekening (slechts 1 op de 4 frames dankzij phase)
+            if ((i & 3) == phase) {
+                py_ptr[i] = terrain.get_height_fast({px, pz});
+            }
+        }
+    }
+    
     void update_hero(size_t i, float delta_time, const Terrain& terrain, uint32_t phase) {
         if (i >= route_index.size() || i >= route_ptr.size() || i >= pos_x.size() || !active[i]) return;
 

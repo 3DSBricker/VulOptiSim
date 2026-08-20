@@ -141,7 +141,6 @@ int main()
         //renderer.set_light_theme(); //Bleh
         auto renderer_end = std::chrono::high_resolution_clock::now();
 
-        //Scene scene(renderer);
         auto scene_start = std::chrono::high_resolution_clock::now();
         Scene scene(&renderer);
         auto scene_end = std::chrono::high_resolution_clock::now();
@@ -149,9 +148,9 @@ int main()
         float scene_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(scene_end - scene_start).count();
         float renderer_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(renderer_end - total_start).count();
         float total_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(scene_end - total_start).count();
-        std::cout << "Renderer loading took: " << renderer_duration << " ms" << std::endl;
-        std::cout << "Scene loading took: " << scene_duration << " ms" << std::endl;
-        std::cout << "Total loading took: " << total_duration << " ms" << std::endl;
+        Log::get_instance()->add_log("[Main] Renderer loading took: %f ms\n", renderer_duration);
+        Log::get_instance()->add_log("[Main] Scene loading took: %f ms\n", scene_duration);
+        Log::get_instance()->add_log("[Main] Total loading took: %f ms\n", total_duration);
 
         //Track last 60 frame timings
         std::array<float, 60> frames;
@@ -174,21 +173,14 @@ int main()
             if (!lock_update)
             {
                 //Fixed timestep
-                // auto draw_start = std::chrono::high_resolution_clock::now();
                 scene.update(1.f / 60.f);
-                // std::this_thread::sleep_for(std::chrono::seconds(5));
-                // auto draw_end = std::chrono::high_resolution_clock::now();
-                // float draw_duration = std::chrono::duration<float, std::chrono::milliseconds::period>(draw_end - draw_start).count();
-                // std::cout << "Update took: " << draw_duration << " ms" << std::endl;
+
             }
 
             //Only call draw and imgui functions in between start and end draw
             renderer.start_draw();
             
-            // renderer.start_draw();
             scene.draw();
-            
-            // std::this_thread::sleep_for(std::chrono::seconds(5));
             
             measure_performance(renderer, scene, delta_time, frames, current_frame, lock_update, start_time);
             

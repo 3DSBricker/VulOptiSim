@@ -1,5 +1,6 @@
 #pragma once
 #include "pch.h"
+#include <limits>
 
 class HeroSystem;
 
@@ -36,4 +37,5 @@ private:
     float max_height = 10;
     float min_height = 0;
     std::vector<glm::vec2> convex_hull_points;
+    size_t last_logged_hull_size = std::numeric_limits<size_t>::max();
 };

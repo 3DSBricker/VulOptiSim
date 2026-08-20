@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "vulkan_image.h"
+#include <future>
 
 namespace vulvox
 {
@@ -384,36 +385,45 @@ namespace vulvox
             throw std::runtime_error("Failed to load texture image! No texture paths given.");
         }
 
-        std::vector<stbi_uc*> pixel_layers;
+        size_t count = texture_paths.size();
+        std::vector<stbi_uc*> pixel_layers(count, nullptr);
+        std::vector<uint32_t> texture_widths(count, 0);
+        std::vector<uint32_t> texture_heights(count, 0);
 
-        std::vector<uint32_t> texture_widths{};
-        std::vector<uint32_t> texture_heights{};
+        // 1. Laad EN decodeer alle afbeeldingen PARALLEL over alle beschikbare CPU-cores
+        std::vector<std::future<void>> futures;
+        futures.reserve(count);
 
-        int texture_width = 0;
-        int texture_height = 0;
-        int texture_channels = 0;
-
-        for (const auto& texture_path : texture_paths)
+        for (size_t i = 0; i < count; ++i)
         {
-            //Load image data from given paths, rgba format is assumed
-            stbi_uc* pixels = stbi_load(texture_path.string().c_str(), &texture_width, &texture_height, &texture_channels, STBI_rgb_alpha);
-            texture_widths.push_back(texture_width);
-            texture_heights.push_back(texture_height);
+            futures.push_back(std::async(std::launch::async, [i, &texture_paths, &pixel_layers, &texture_widths, &texture_heights]() {
+                int w = 0, h = 0, channels = 0;
+                stbi_uc* pixels = stbi_load(texture_paths[i].string().c_str(), &w, &h, &channels, STBI_rgb_alpha);
+                
+                if (!pixels)
+                {
+                    throw std::runtime_error("Failed to load texture image! Path was: " + texture_paths[i].string());
+                }
 
-            if (!pixels)
-            {
-                throw std::runtime_error("Failed to load texture image! Path was: " + texture_path.string());
-            }
-
-            pixel_layers.push_back(pixels);
+                pixel_layers[i] = pixels;
+                texture_widths[i] = static_cast<uint32_t>(w);
+                texture_heights[i] = static_cast<uint32_t>(h);
+            }));
         }
+
+        // Wacht tot alle threads klaar zijn met stbi_load
+        for (auto& f : futures)
+        {
+            f.get();
+        }
+
+        // --- VANAF HIER IS JOUW BESTAANDE CODE ONGEWIJZIGD ---
 
         if (std::ranges::adjacent_find(texture_widths, std::ranges::not_equal_to()) != texture_widths.end() ||
             std::ranges::adjacent_find(texture_heights, std::ranges::not_equal_to()) != texture_heights.end())
         {
             std::cout << "Warning: Given textures for texture array creation are not equal in size! Attempting to use max width and height values." << std::endl;
         }
-
 
         uint32_t max_width = *std::ranges::max_element(texture_widths.begin(), texture_widths.end());
         uint32_t max_height = *std::ranges::max_element(texture_heights.begin(), texture_heights.end());
@@ -428,7 +438,7 @@ namespace vulvox
             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
         //Copy the texture layers into the staging buffer one by one
-        for (int i = 0; i < pixel_layers.size(); i++)
+        for (size_t i = 0; i < pixel_layers.size(); i++)
         {
             VkDeviceSize layer_size = texture_widths[i] * texture_heights[i] * 4; //RGBA8 assumed
 
